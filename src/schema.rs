@@ -1,7 +1,6 @@
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 pub(crate) const V1: &str = r"
-BEGIN;
 CREATE TABLE applications (
     id INTEGER PRIMARY KEY,
     bundle_id TEXT NOT NULL UNIQUE,
@@ -76,7 +75,6 @@ CREATE TRIGGER paste_items_au AFTER UPDATE OF text, title ON paste_items BEGIN
     INSERT INTO paste_items_fts (rowid, text, title) VALUES (new.id, new.text, new.title);
 END;
 PRAGMA user_version = 1;
-COMMIT;
 ";
 
 /// Adds key/ID kinds, source domains and notes, and indexes notes.
@@ -126,16 +124,16 @@ pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version >= 2 {
+        return Ok(());
+    }
+    // Another process may be migrating too; re-check under the write lock.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
-        conn.execute_batch(V1)?;
+        tx.execute_batch(V1)?;
     }
     if version < 2 {
-        // Another process may be migrating too; re-check under the write lock.
-        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version >= 2 {
-            return Ok(());
-        }
         tx.execute_batch(V2)?;
         let urls: Vec<(i64, String)> = tx
             .prepare("SELECT id, source_url FROM paste_items WHERE source_url IS NOT NULL")?
@@ -148,7 +146,6 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             }
         }
         drop(set);
-        tx.commit()?;
     }
-    Ok(())
+    tx.commit()
 }

@@ -229,7 +229,17 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
             let provider = provider.unwrap_or_else(|| "API key".to_owned());
             (SecretKind::Key, provider, label, found.ranges)
         }
+        // An ID-shaped value on a credentials page or assigned to a
+        // key-like name is a key, e.g. `API_KEY="023e10…"`.
         _ => match (id, site) {
+            (Some(range), site) if hinted || has_hint(assigned_name(&text[..range.start])) => {
+                let provider = site.or(app.map(str::to_owned));
+                let label = provider
+                    .as_ref()
+                    .map_or("API key".to_owned(), |p| format!("{p} key"));
+                let provider = provider.unwrap_or_else(|| "API key".to_owned());
+                (SecretKind::Key, provider, label, vec![range])
+            }
             (Some(range), Some(site)) => {
                 let label = format!("{site} ID");
                 (SecretKind::Id, site, label, vec![range])
@@ -502,6 +512,17 @@ mod tests {
             annotated("re_compile_pattern_for_parser_module", None, None),
             None
         );
+        let quoted = annotated(
+            "API_KEY=\"023e105f4ecef8ad9ca31a8372d0c353\"",
+            Some("https://example.com/settings"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (quoted.kind, quoted.name.as_str()),
+            (SecretKind::Key, "API_KEY")
+        );
+        assert!(!quoted.masked.contains("ecef8ad9ca31a"));
     }
 
     #[test]
