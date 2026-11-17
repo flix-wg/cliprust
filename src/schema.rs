@@ -1,7 +1,6 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-const V1: &str = r"
-BEGIN;
+pub(crate) const V1: &str = r"
 CREATE TABLE applications (
     id INTEGER PRIMARY KEY,
     bundle_id TEXT NOT NULL UNIQUE,
@@ -76,7 +75,38 @@ CREATE TRIGGER paste_items_au AFTER UPDATE OF text, title ON paste_items BEGIN
     INSERT INTO paste_items_fts (rowid, text, title) VALUES (new.id, new.text, new.title);
 END;
 PRAGMA user_version = 1;
-COMMIT;
+";
+
+/// Adds key/ID kinds, source domains and notes, and indexes notes.
+const V2: &str = r"
+ALTER TABLE paste_items ADD COLUMN secret_kind TEXT;
+ALTER TABLE paste_items ADD COLUMN source_domain TEXT;
+ALTER TABLE paste_items ADD COLUMN note TEXT;
+UPDATE paste_items SET secret_kind = 'key' WHERE secret_provider IS NOT NULL;
+CREATE INDEX paste_items_secret ON paste_items (secret_kind) WHERE secret_kind IS NOT NULL;
+DROP TRIGGER paste_items_ai;
+DROP TRIGGER paste_items_ad;
+DROP TRIGGER paste_items_au;
+DROP TABLE paste_items_fts;
+CREATE VIRTUAL TABLE paste_items_fts USING fts5(
+    text, title, note, content='paste_items', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER paste_items_ai AFTER INSERT ON paste_items BEGIN
+    INSERT INTO paste_items_fts (rowid, text, title, note)
+    VALUES (new.id, new.text, new.title, new.note);
+END;
+CREATE TRIGGER paste_items_ad AFTER DELETE ON paste_items BEGIN
+    INSERT INTO paste_items_fts (paste_items_fts, rowid, text, title, note)
+    VALUES ('delete', old.id, old.text, old.title, old.note);
+END;
+CREATE TRIGGER paste_items_au AFTER UPDATE OF text, title, note ON paste_items BEGIN
+    INSERT INTO paste_items_fts (paste_items_fts, rowid, text, title, note)
+    VALUES ('delete', old.id, old.text, old.title, old.note);
+    INSERT INTO paste_items_fts (rowid, text, title, note)
+    VALUES (new.id, new.text, new.title, new.note);
+END;
+INSERT INTO paste_items_fts (paste_items_fts) VALUES ('rebuild');
+PRAGMA user_version = 2;
 ";
 
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
@@ -94,8 +124,28 @@ pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version < 1 {
-        conn.execute_batch(V1)?;
+    if version >= 2 {
+        return Ok(());
     }
-    Ok(())
+    // Another process may be migrating too; re-check under the write lock.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version < 1 {
+        tx.execute_batch(V1)?;
+    }
+    if version < 2 {
+        tx.execute_batch(V2)?;
+        let urls: Vec<(i64, String)> = tx
+            .prepare("SELECT id, source_url FROM paste_items WHERE source_url IS NOT NULL")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut set = tx.prepare("UPDATE paste_items SET source_domain = ?1 WHERE id = ?2")?;
+        for (id, url) in urls {
+            if let Some(domain) = crate::secrets::domain(&url) {
+                set.execute(rusqlite::params![domain, id])?;
+            }
+        }
+        drop(set);
+    }
+    tx.commit()
 }

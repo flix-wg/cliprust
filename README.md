@@ -21,7 +21,10 @@ real full-text search.
 - Retention by item count or age. Items in manual lists are always kept.
 - Optional key detection: recognises API keys and tokens, names them from
   `NAME=value` or the page they came from, and files them in a Keys list.
-  Search and previews only ever see a masked form.
+  Search and previews only ever see a masked form. Unprefixed keys take the
+  site name as provider. IDs copied from a web page (UUIDs, hex IDs such as
+  Cloudflare zone IDs) are kept unmasked in an IDs list.
+- Notes on any item, included in search.
 - Imports an existing PasteNow history.
 
 ## Usage
@@ -35,7 +38,9 @@ cliprust lists add Links --rule '{"type":"kind","kind":"url"}'
 cliprust lists put Snippets 42
 cliprust exclude add com.agilebits.onepassword7
 cliprust settings detect-keys on
-cliprust keys
+cliprust keys [--provider P] [--site cloudflare.com] [--ids|--all] [--group]
+cliprust keys facets                    # providers and sites with counts
+cliprust note 42 staging account        # no text removes the note
 cliprust import-pastenow
 ```
 

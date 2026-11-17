@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Kind;
 
-/// Case-insensitive (ASCII) substring test on text and title; binds the
-/// needle twice.
+/// Case-insensitive (ASCII) substring test on text, title and note; binds
+/// the needle three times.
 pub(crate) const CONTAINS_SQL: &str = "(instr(lower(coalesce(p.text, '')), lower(?)) > 0 \
-     OR instr(lower(coalesce(p.title, '')), lower(?)) > 0)";
+     OR instr(lower(coalesce(p.title, '')), lower(?)) > 0 \
+     OR instr(lower(coalesce(p.note, '')), lower(?)) > 0)";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -58,8 +59,7 @@ impl Rule {
                 "coalesce(a.bundle_id, '') = ?".into()
             }
             Rule::Contains { text } => {
-                params.push(text.clone().into());
-                params.push(text.clone().into());
+                params.extend(std::iter::repeat_n(Value::from(text.clone()), 3));
                 CONTAINS_SQL.into()
             }
             Rule::CopiedWithin { seconds } => {
@@ -77,7 +77,7 @@ impl Rule {
                  AND p.created_at < unixepoch(? / 1000, 'unixepoch', 'localtime', 'start of day', '+1 day', 'utc') * 1000"
                     .into()
             }
-            Rule::Secret => "p.secret_provider IS NOT NULL".into(),
+            Rule::Secret => "p.secret_kind = 'key'".into(),
         }
     }
 }

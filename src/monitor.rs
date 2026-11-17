@@ -5,7 +5,7 @@ use std::time::Duration;
 use clipboard_rs::{ClipboardContext, ClipboardHandler, ClipboardWatcher, ClipboardWatcherContext};
 
 use crate::capture::{self, Skipped};
-use crate::model::Kind;
+use crate::model::{Kind, SecretKind};
 use crate::store::{Ingest, Store};
 use crate::{Error, Result, platform, secrets};
 
@@ -14,7 +14,7 @@ pub enum Event {
     Stored {
         outcome: Ingest,
         kind: Kind,
-        secret: bool,
+        secret: Option<SecretKind>,
     },
     Skipped(Skipped),
     Failed(Error),
@@ -81,7 +81,7 @@ impl<F> Handler<F> {
         Ok(Event::Stored {
             outcome,
             kind: cap.kind,
-            secret: cap.secret.is_some(),
+            secret: cap.secret.as_ref().map(|s| s.kind),
         })
     }
 }

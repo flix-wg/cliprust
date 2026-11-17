@@ -7,7 +7,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use cliprust::monitor::{self, Event};
 use cliprust::{
-    Capture, Ingest, ItemSummary, KEYS_LIST, Kind, Rule, SortType, Store, capture, now_ms, secrets,
+    Capture, Facet, Ingest, ItemSummary, Kind, Rule, SecretFilter, SecretKind, SortType, Store,
+    capture, now_ms, secrets,
 };
 
 type CliResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -78,10 +79,33 @@ enum Cmd {
     Prune {
         keep: u32,
     },
-    /// Detected API keys and tokens
+    /// Detected API keys and tokens, and IDs copied from web pages
+    #[command(args_conflicts_with_subcommands = true)]
     Keys {
+        #[command(subcommand)]
+        cmd: Option<KeysCmd>,
         #[arg(short = 'n', long, default_value_t = 50)]
         limit: usize,
+        /// Only this provider, e.g. "Cloudflare API token"
+        #[arg(long)]
+        provider: Option<String>,
+        /// Only keys copied from this site, e.g. cloudflare.com
+        #[arg(long)]
+        site: Option<String>,
+        /// Show IDs instead of keys
+        #[arg(long, conflicts_with = "all")]
+        ids: bool,
+        /// Show keys and IDs
+        #[arg(long)]
+        all: bool,
+        /// Group by provider
+        #[arg(long)]
+        group: bool,
+    },
+    /// Attach a searchable note to an item; without text, remove it
+    Note {
+        id: i64,
+        text: Vec<String>,
     },
     #[command(subcommand)]
     Lists(ListsCmd),
@@ -102,6 +126,12 @@ enum Cmd {
         /// PasteNow.sqlite [default: PasteNow's store in its group container]
         path: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum KeysCmd {
+    /// Providers and sites with how many keys and IDs each has
+    Facets,
 }
 
 #[derive(Subcommand)]
@@ -237,20 +267,46 @@ fn run(cli: Cli) -> CliResult {
         Cmd::Delete { id } => require(store.delete(id)?, id)?,
         Cmd::Clear => println!("deleted {} items", store.clear()?),
         Cmd::Prune { keep } => println!("deleted {} items", store.prune(Some(keep), None)?),
-        Cmd::Keys { limit } => match store.list_by_name(KEYS_LIST)? {
-            Some(list) => {
-                for it in store.list_items(&list, limit, now_ms())? {
-                    println!(
-                        "{:>6}  {:<40}  {:<22}  {}",
-                        it.id,
-                        it.title.as_deref().unwrap_or("-"),
-                        it.preview.as_deref().map(one_line).unwrap_or_default(),
-                        it.source_url.as_deref().unwrap_or("-")
-                    );
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Facets),
+            ..
+        } => {
+            let facets = store.secret_facets(None)?;
+            print_facets("providers", &facets.providers);
+            println!();
+            print_facets("sites", &facets.domains);
+        }
+        Cmd::Keys {
+            cmd: None,
+            limit,
+            provider,
+            site,
+            ids,
+            all,
+            group,
+        } => {
+            let kind = match (ids, all) {
+                (_, true) => None,
+                (true, _) => Some(SecretKind::Id),
+                _ => Some(SecretKind::Key),
+            };
+            let filter = SecretFilter {
+                kind,
+                provider,
+                domain: site,
+            };
+            let items = store.secrets(&filter, limit)?;
+            if items.is_empty() && !store.settings()?.detect_keys {
+                println!("no keys yet (enable with `cliprust settings detect-keys on`)");
+            } else if group {
+                print_grouped(&items);
+            } else {
+                for it in &items {
+                    println!("{}", secret_line(it, true));
                 }
             }
-            None => println!("no keys yet (enable with `cliprust settings detect-keys on`)"),
-        },
+        }
+        Cmd::Note { id, text } => require(store.set_note(id, Some(&text.join(" ")))?, id)?,
         Cmd::Lists(cmd) => lists(&store, cmd)?,
         Cmd::Exclude(ExcludeCmd::Ls) => store.excludes()?.iter().for_each(|b| println!("{b}")),
         Cmd::Exclude(ExcludeCmd::Add { bundle_id }) => store.add_exclude(&bundle_id)?,
@@ -363,9 +419,10 @@ fn watch(store: Store, config: monitor::Config, path: &Path) -> CliResult {
             outcome: Ingest::Inserted(id),
             kind,
             secret,
-        } => {
-            eprintln!("stored #{id} ({kind}{})", if secret { ", key" } else { "" });
-        }
+        } => match secret {
+            Some(secret) => eprintln!("stored #{id} ({kind}, {})", secret.as_str()),
+            None => eprintln!("stored #{id} ({kind})"),
+        },
         Event::Stored {
             outcome: Ingest::Duplicate(id),
             ..
@@ -385,6 +442,54 @@ fn watch(store: Store, config: monitor::Config, path: &Path) -> CliResult {
     }
     #[cfg(not(target_os = "macos"))]
     Ok(monitor::run(store, config, on_event)?)
+}
+
+fn secret_line(it: &ItemSummary, with_provider: bool) -> String {
+    let kind = it.secret_kind.map_or("-", SecretKind::as_str);
+    let mut line = format!("{:>6}  {kind:<3}  ", it.id);
+    if with_provider {
+        line.push_str(&format!(
+            "{:<24}  ",
+            it.secret_provider.as_deref().unwrap_or("-")
+        ));
+    }
+    line.push_str(&format!(
+        "{:<36}  {:<24}  {}",
+        it.title.as_deref().unwrap_or("-"),
+        it.preview.as_deref().map(one_line).unwrap_or_default(),
+        it.source_domain.as_deref().unwrap_or("-")
+    ));
+    if let Some(note) = &it.note {
+        line.push_str(&format!("  # {}", one_line(note)));
+    }
+    line
+}
+
+fn print_grouped(items: &[ItemSummary]) {
+    let mut groups: Vec<(&str, Vec<&ItemSummary>)> = Vec::new();
+    for it in items {
+        let provider = it.secret_provider.as_deref().unwrap_or("-");
+        match groups.iter_mut().find(|(p, _)| *p == provider) {
+            Some((_, members)) => members.push(it),
+            None => groups.push((provider, vec![it])),
+        }
+    }
+    for (i, (provider, members)) in groups.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{provider} ({})", members.len());
+        for it in members {
+            println!("{}", secret_line(it, false));
+        }
+    }
+}
+
+fn print_facets(heading: &str, facets: &[Facet]) {
+    println!("{heading}");
+    for f in facets {
+        println!("{:>6}  {}", f.count, f.name);
+    }
 }
 
 fn print_items(items: &[ItemSummary]) {

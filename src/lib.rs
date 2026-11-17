@@ -13,9 +13,13 @@ mod schema;
 pub mod secrets;
 pub mod store;
 
-pub use model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, Secret, Settings, format};
+pub use model::{
+    AppInfo, Capture, Item, ItemSummary, Kind, Rep, Secret, SecretKind, Settings, format,
+};
 pub use rules::{Rule, SortType};
-pub use store::{Ingest, KEYS_LIST, PasteList, Stats, Store};
+pub use store::{
+    Facet, Facets, IDS_LIST, Ingest, KEYS_LIST, PasteList, SecretFilter, Stats, Store,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
