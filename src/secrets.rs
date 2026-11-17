@@ -10,36 +10,40 @@ use crate::model::{Capture, Kind, Secret};
 /// Clips longer than this are documents or logs, not a copied key.
 const MAX_CLIP_BYTES: usize = 8 * 1024;
 
-/// First match wins, so more specific prefixes come first.
+/// First match wins, so more specific prefixes come first. ASCII word
+/// boundaries keep the regexes on the small, fast engine.
 const PATTERNS: &[(&str, &str)] = &[
-    ("Anthropic API key", r"\bsk-ant-[A-Za-z0-9_-]{32,}"),
+    ("Anthropic API key", r"(?-u:\b)sk-ant-[A-Za-z0-9_-]{32,}"),
     (
         "OpenAI API key",
-        r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}",
+        r"(?-u:\b)sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}",
     ),
     (
         "GitHub token",
-        r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})",
+        r"(?-u:\b)(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})",
     ),
-    ("GitLab token", r"\bglpat-[A-Za-z0-9_-]{20,}"),
-    ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    ("GitLab token", r"(?-u:\b)glpat-[A-Za-z0-9_-]{20,}"),
+    (
+        "AWS access key",
+        r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)",
+    ),
     (
         "Stripe key",
-        r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{20,}",
+        r"(?-u:\b)(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{20,}",
     ),
-    ("Slack token", r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
-    ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}"),
-    ("Hugging Face token", r"\bhf_[A-Za-z0-9]{30,}"),
-    ("Groq API key", r"\bgsk_[A-Za-z0-9]{40,}"),
-    ("npm token", r"\bnpm_[A-Za-z0-9]{36}"),
+    ("Slack token", r"(?-u:\b)xox[abposr]-[A-Za-z0-9-]{10,}"),
+    ("Google API key", r"(?-u:\b)AIza[0-9A-Za-z_-]{35}"),
+    ("Hugging Face token", r"(?-u:\b)hf_[A-Za-z0-9]{30,}"),
+    ("Groq API key", r"(?-u:\b)gsk_[A-Za-z0-9]{40,}"),
+    ("npm token", r"(?-u:\b)npm_[A-Za-z0-9]{36}"),
     (
         "SendGrid API key",
-        r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
+        r"(?-u:\b)SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
     ),
-    ("Resend API key", r"\bre_[A-Za-z0-9_]{24,}"),
+    ("Resend API key", r"(?-u:\b)re_[A-Za-z0-9_]{24,}"),
     (
         "JSON Web Token",
-        r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+        r"(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
     ),
     ("Private key", r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----"),
 ];

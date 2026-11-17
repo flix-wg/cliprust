@@ -248,9 +248,12 @@ impl Store {
         Ok(deleted)
     }
 
-    /// Deletes all history, including items in lists.
+    /// Deletes the history except items kept in manual lists.
     pub fn clear(&self) -> Result<usize> {
-        let n = self.conn.execute("DELETE FROM paste_items", [])?;
+        let n = self.conn.execute(
+            &format!("DELETE FROM paste_items AS p WHERE {UNLISTED}"),
+            [],
+        )?;
         self.reclaim()?;
         Ok(n)
     }
@@ -589,9 +592,11 @@ mod tests {
         assert_eq!(ids(s.search("docs", 10).unwrap()), [url]);
         s.delete(code).unwrap();
         assert!(s.search("rust", 10).unwrap().is_empty());
-        s.clear().unwrap();
-        assert!(s.search("example", 10).unwrap().is_empty());
-        assert!(s.recent(10).unwrap().is_empty());
+        s.add_to_list("Snippets", url, 4).unwrap();
+        let note = add(&mut s, "another note", None, 5);
+        assert_eq!(s.clear().unwrap(), 2);
+        assert_eq!(ids(s.recent(10).unwrap()), [url]);
+        assert!(s.search("note", 10).unwrap().is_empty() && note > url);
     }
 
     #[test]
