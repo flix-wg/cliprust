@@ -35,6 +35,13 @@ enum SelfTest {
         await key(19, "2", .command); log("cmd-2")
         try? await Task.sleep(for: .milliseconds(300))
         print("self-test: clipboard=\"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
+        panel.show()
+        try? await Task.sleep(for: .milliseconds(500))
+        await key(40, "k", .command)
+        NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil)
+        try? await Task.sleep(for: .seconds(1))
+        let titles = NSApp.windows.filter(\.isVisible).map(\.title)
+        print("self-test: panel visible=\(panel.isVisible) windows=\(titles)")
         exit(0)
     }
 }

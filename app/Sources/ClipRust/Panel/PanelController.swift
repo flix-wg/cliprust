@@ -97,9 +97,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         let target = explicitTarget ?? self.target
         guard let core = app.core else { return }
         Task {
-            if item.isSecret, !(await KeyGate.authorize("paste a saved key")) { return }
             do {
-                try await core.pastePrep(item.id, plain: mode == .plain || Prefs.plainText)
+                if item.isSecret {
+                    // Written by hand and marked concealed, so other clipboard managers skip it.
+                    guard await KeyGate.authorize("paste a saved key"),
+                          let value = try await core.revealKey(item.id) else { return }
+                    Clipboard.copySecret(value)
+                } else {
+                    try await core.pastePrep(item.id, plain: mode == .plain || Prefs.plainText)
+                }
             } catch {
                 NSSound.beep()
                 return

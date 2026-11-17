@@ -30,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(AppIcon.renderIconset(into: URL(fileURLWithPath: args[i + 1])) ? 0 : 1)
         }
         MainMenu.install()
+        // Hand focus back once the last window closes; the app has no Dock icon.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
+            let closing = note.object as? NSWindow
+            DispatchQueue.main.async {
+                let open = NSApp.windows.contains { $0 !== closing && $0.isVisible && !($0 is NSPanel) && $0.canBecomeMain }
+                if !open, closing?.canBecomeMain == true { NSApp.hide(nil) }
+            }
+        }
         Task { await start() }
     }
 
