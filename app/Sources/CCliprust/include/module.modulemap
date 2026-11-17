@@ -1,0 +1,5 @@
+module CCliprust {
+    header "cliprust.h"
+    link "cliprust"
+    export *
+}
