@@ -523,3 +523,148 @@ fn truncate(s: &str, max_bytes: usize) -> &str {
     }
     &s[..end]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Secret, format};
+
+    fn store() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    fn add(store: &mut Store, text: &str, bundle_id: Option<&str>, now: i64) -> i64 {
+        let mut cap = Capture::from_text(text.to_owned());
+        cap.app = bundle_id.map(|b| AppInfo {
+            bundle_id: b.into(),
+            name: None,
+            path: None,
+        });
+        store.ingest(&cap, now).unwrap().id()
+    }
+
+    fn ids(items: Vec<ItemSummary>) -> Vec<i64> {
+        items.into_iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn duplicate_copies_move_to_top_and_retention_keeps_listed_items() {
+        let mut s = store();
+        let hello = add(&mut s, "hello world", Some("com.a"), 1);
+        let other = add(&mut s, "other", Some("com.a"), 2);
+        let mut again = Capture::from_text("hello world".into());
+        again.app = Some(AppInfo {
+            bundle_id: "com.b".into(),
+            name: None,
+            path: None,
+        });
+        assert_eq!(s.ingest(&again, 3).unwrap(), Ingest::Duplicate(hello));
+        let recent = s.recent(10).unwrap();
+        assert_eq!(ids(recent.clone()), [hello, other]);
+        assert_eq!(recent[0].app_bundle_id.as_deref(), Some("com.b"));
+
+        let pinned = add(&mut s, "pinned", None, 0);
+        s.add_to_list("Snippets", pinned, 5).unwrap();
+        let newest = add(&mut s, "newest", None, 6);
+        assert_eq!(s.prune(Some(1), None).unwrap(), 2);
+        assert_eq!(ids(s.recent(10).unwrap()), [newest, pinned]);
+        assert_eq!(s.prune(None, Some(7)).unwrap(), 1);
+        assert_eq!(ids(s.recent(10).unwrap()), [pinned]);
+    }
+
+    #[test]
+    fn search_finds_substrings_and_forgets_deleted_items() {
+        let mut s = store();
+        let code = add(&mut s, "let cliprusty = 1; // 東京", None, 1);
+        let url = add(&mut s, "https://example.com/path", None, 2);
+        add(&mut s, "unrelated note", None, 3);
+
+        assert_eq!(ids(s.search("rust", 10).unwrap()), [code]);
+        assert_eq!(ids(s.search("EXAMPLE path", 10).unwrap()), [url]);
+        assert_eq!(ids(s.search("ex", 10).unwrap()), [url]);
+        assert_eq!(ids(s.search("東京", 10).unwrap()), [code]);
+        assert!(s.search("\"unbalanced AND (", 10).unwrap().is_empty());
+
+        s.set_title(url, Some("Work docs")).unwrap();
+        assert_eq!(ids(s.search("docs", 10).unwrap()), [url]);
+        s.delete(code).unwrap();
+        assert!(s.search("rust", 10).unwrap().is_empty());
+        s.clear().unwrap();
+        assert!(s.search("example", 10).unwrap().is_empty());
+        assert!(s.recent(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn payloads_round_trip_and_secrets_stay_out_of_the_index() {
+        let mut s = store();
+        let mut cap = Capture::from_text("x".repeat(100_000));
+        cap.reps.push(Rep::new(format::HTML, b"<b>x</b>".to_vec()));
+        let id = s.ingest(&cap, 1).unwrap().id();
+        assert_eq!(s.get(id).unwrap().unwrap().reps, cap.reps);
+        let stats = s.stats().unwrap();
+        assert!(stats.stored_bytes * 10 < stats.raw_bytes);
+
+        let mut key = Capture::from_text("sk-live-secret-value".into());
+        key.secret = Some(Secret {
+            provider: "Test key".into(),
+            name: "TEST_KEY".into(),
+            masked: "sk-liv…alue".into(),
+        });
+        let key_id = s.ingest(&key, 2).unwrap().id();
+        assert!(s.search("secret", 10).unwrap().is_empty());
+        assert_eq!(ids(s.search("TEST_KEY", 10).unwrap()), [key_id]);
+        let keys = s.list_by_name(KEYS_LIST).unwrap().unwrap();
+        assert_eq!(ids(s.list_items(&keys, 10, 3).unwrap()), [key_id]);
+        assert_eq!(
+            s.get(key_id).unwrap().unwrap().text().as_deref(),
+            Some("sk-live-secret-value")
+        );
+    }
+
+    #[test]
+    fn smart_lists_filter_with_rules() {
+        let mut s = store();
+        let home = add(&mut s, "https://home.example", Some("com.home"), 1_000);
+        add(&mut s, "https://work.example", Some("com.work"), 2_000);
+        add(&mut s, "plain text", Some("com.home"), 3_000);
+        let no_app = add(&mut s, "https://none.example", None, 4_000);
+
+        let rule: Rule = serde_json::from_str(
+            r#"{"type":"all","rules":[{"type":"kind","kind":"url"},{"type":"not","rule":{"type":"app","bundle_id":"com.work"}}]}"#,
+        )
+        .unwrap();
+        s.create_list("Links", Some(&rule), SortType::Oldest)
+            .unwrap();
+        let links = s.list_by_name("Links").unwrap().unwrap();
+        assert_eq!(links.rule.as_ref(), Some(&rule));
+        assert_eq!(
+            ids(s.list_items(&links, 10, 5_000).unwrap()),
+            [home, no_app]
+        );
+
+        let recent = PasteList {
+            rule: Some(Rule::CopiedWithin { seconds: 2 }),
+            sort: SortType::Recent,
+            ..links
+        };
+        assert_eq!(s.list_items(&recent, 10, 5_000).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn exclusions_and_settings_persist() {
+        let mut s = store();
+        s.add_exclude("com.agilebits.onepassword7").unwrap();
+        assert!(s.is_excluded("com.agilebits.onepassword7").unwrap());
+        assert!(!s.is_excluded("com.apple.Safari").unwrap());
+        assert!(s.remove_exclude("com.agilebits.onepassword7").unwrap());
+        assert!(s.excludes().unwrap().is_empty());
+
+        let settings = Settings {
+            detect_keys: true,
+            max_items: None,
+            ..Settings::default()
+        };
+        s.save_settings(&settings).unwrap();
+        assert_eq!(s.settings().unwrap(), settings);
+    }
+}
