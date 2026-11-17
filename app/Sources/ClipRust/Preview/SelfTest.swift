@@ -34,7 +34,7 @@ enum SelfTest {
         await key(53, "\u{1B}"); log("escape")
         await key(19, "2", .command); log("cmd-2")
         try? await Task.sleep(for: .milliseconds(300))
-        print("self-test: clipboard=\"\(NSPasteboard.general.string(forType: .string) ?? "")\"")
+        print("self-test: clipboard chars=\(NSPasteboard.general.string(forType: .string)?.count ?? 0)")
         panel.show()
         try? await Task.sleep(for: .milliseconds(500))
         await key(40, "k", .command)

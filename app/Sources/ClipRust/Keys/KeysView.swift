@@ -200,9 +200,9 @@ struct KeyInspector: View {
     private func valueBox(_ item: Item) -> some View {
         let shown = model.revealed[item.id]
         return VStack(alignment: .leading, spacing: 8) {
+            // Not selectable: ⌘C would bypass the concealed copy.
             Text(shown ?? item.maskedValue)
                 .font(.system(size: 12, design: .monospaced))
-                .textSelection(.enabled)
                 .lineLimit(5)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)

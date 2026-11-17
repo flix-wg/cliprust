@@ -53,7 +53,8 @@ final class PanelModel {
     var selected: Item? { selectedIndex.map { items[$0] } }
     var current: Item? {
         guard let selected else { return nil }
-        return detail?.id == selected.id ? detail : selected
+        guard let detail, detail.id == selected.id, detail.isSecret == selected.isSecret else { return selected }
+        return detail
     }
 
     func showsCount(_ f: ItemFilter) -> Bool {

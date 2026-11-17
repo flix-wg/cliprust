@@ -208,9 +208,11 @@ pub unsafe extern "C" fn cr_watch(h: *const CrHandle, cb: EventCallback, ctx: *m
     }
     let path = h.path.clone();
     let sink = Arc::new(Sink { cb, ctx });
-    std::thread::Builder::new()
+    let thread_sink = Arc::clone(&sink);
+    let spawned = std::thread::Builder::new()
         .name("cliprust-watch".into())
         .spawn(move || {
+            let sink = thread_sink;
             let events = Arc::clone(&sink);
             let result = Store::open(&path).and_then(|store| {
                 monitor::run(store, monitor::Config::default(), move |ev| {
@@ -220,8 +222,11 @@ pub unsafe extern "C" fn cr_watch(h: *const CrHandle, cb: EventCallback, ctx: *m
             if let Err(e) = result {
                 sink.emit(json!({ "type": "failed", "error": e.to_string() }));
             }
-        })
-        .ok();
+        });
+    if let Err(e) = spawned {
+        h.watching.store(false, Ordering::SeqCst);
+        sink.emit(json!({ "type": "failed", "error": e.to_string() }));
+    }
 }
 
 fn event_json(ev: &Event) -> Value {
@@ -336,6 +341,10 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
             }
             let P { id, plain } = params(p)?;
             let item = store.get(id).map_err(e)?.ok_or("no such item")?;
+            // Keys go through reveal_key so the app can gate and conceal them.
+            if is_masked(&item.summary) {
+                return Err("item is a key".into());
+            }
             platform::with_autorelease_pool(|| -> R<()> {
                 let ctx = clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?;
                 capture::write(&ctx, &item.reps, plain).map_err(e)
@@ -519,9 +528,10 @@ fn items(store: &Store, q: ItemsQuery, now: i64) -> R<Vec<ItemSummary>> {
         let terms: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         found.retain(|s| {
             let hay = format!(
-                "{} {}",
+                "{} {} {}",
                 s.title.as_deref().unwrap_or_default(),
-                s.preview.as_deref().unwrap_or_default()
+                s.preview.as_deref().unwrap_or_default(),
+                s.note.as_deref().unwrap_or_default()
             )
             .to_lowercase();
             terms.iter().all(|t| hay.contains(t.as_str()))
@@ -589,5 +599,7 @@ mod tests {
             req("item", json!({"id": id}))["text"],
             "sk-live-secret-value"
         );
+        let paste = json!({"method": "paste_prep", "params": {"id": id}});
+        assert!(call(&h, &paste.to_string()).is_err());
     }
 }

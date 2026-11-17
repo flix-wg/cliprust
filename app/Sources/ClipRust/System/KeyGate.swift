@@ -26,10 +26,12 @@ enum KeyGate {
 enum Clipboard {
     /// Marked concealed so clipboard managers, ClipRust included, skip it.
     static func copySecret(_ value: String) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(value, forType: .string)
-        pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        // One write, so no reader sees the value without the marker.
+        let entry = NSPasteboardItem()
+        entry.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        entry.setString(value, forType: .string)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([entry])
     }
 
     static func copy(_ value: String) {

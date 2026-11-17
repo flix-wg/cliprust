@@ -12,8 +12,11 @@ enum Paster {
             explainOnce()
             return
         }
-        if let target, !target.isActive { target.activate() }
+        // Without a known target the item just stays on the clipboard.
+        guard let target, !target.isTerminated else { return }
+        if !target.isActive { target.activate() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else { return }
             let source = CGEventSource(stateID: .combinedSessionState)
             for down in [true, false] {
                 let e = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: down)
