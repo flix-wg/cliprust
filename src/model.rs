@@ -86,12 +86,38 @@ pub struct Capture {
     pub secret: Option<Secret>,
 }
 
-/// A detected API key or token. Only `masked` reaches the search index.
+/// A detected key, or an identifier copied from a web page. Only `masked`
+/// reaches the search index; for an ID it is the plain text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Secret {
+    pub kind: SecretKind,
     pub provider: String,
     pub name: String,
     pub masked: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretKind {
+    Key,
+    Id,
+}
+
+impl SecretKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SecretKind::Key => "key",
+            SecretKind::Id => "id",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "key" => Some(SecretKind::Key),
+            "id" => Some(SecretKind::Id),
+            _ => None,
+        }
+    }
 }
 
 impl Capture {
@@ -147,7 +173,7 @@ fn looks_like_url(text: &str) -> bool {
         })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ItemSummary {
     pub id: i64,
     pub kind: Kind,
@@ -156,7 +182,11 @@ pub struct ItemSummary {
     pub preview: Option<String>,
     pub app_bundle_id: Option<String>,
     pub source_url: Option<String>,
+    /// Registrable domain of `source_url`, e.g. `cloudflare.com`.
+    pub source_domain: Option<String>,
+    pub secret_kind: Option<SecretKind>,
     pub secret_provider: Option<String>,
+    pub note: Option<String>,
     pub created_at: i64,
     pub last_used_at: i64,
     pub byte_size: i64,

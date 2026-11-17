@@ -6,18 +6,22 @@ use std::path::Path;
 use rusqlite::{
     Connection, OptionalExtension, Row, TransactionBehavior, params, params_from_iter, types::Value,
 };
+use serde::{Deserialize, Serialize};
 
-use crate::model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, Settings};
+use crate::model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, SecretKind, Settings};
 use crate::rules::{CONTAINS_SQL, Rule, SortType};
-use crate::{Result, schema};
+use crate::{Result, schema, secrets};
 
 pub const KEYS_LIST: &str = "Keys";
+/// IDs get their own list so that Keys holds only masked secrets.
+pub const IDS_LIST: &str = "IDs";
 
 const ZSTD_LEVEL: i32 = 3;
 /// FTS indexes at most this much of a clip; the full text stays in the payload.
 const INDEXED_TEXT_LIMIT: usize = 64 * 1024;
 const SUMMARY_SQL: &str = "SELECT p.id, p.kind, p.title, substr(p.text, 1, 200), a.bundle_id, \
-     p.source_url, p.secret_provider, p.created_at, p.last_used_at, p.byte_size \
+     p.source_url, p.source_domain, p.secret_kind, p.secret_provider, p.note, \
+     p.created_at, p.last_used_at, p.byte_size \
      FROM paste_items p LEFT JOIN applications a ON a.id = p.app_id";
 /// Items in a manual list are kept by retention and `prune`.
 const UNLISTED: &str = "p.id NOT IN (SELECT item_id FROM paste_list_items)";
@@ -44,6 +48,29 @@ pub struct PasteList {
     pub rule: Option<Rule>,
     pub sort: SortType,
     pub sort_weight: f64,
+}
+
+/// Narrows [`Store::secrets`]; `None` fields match everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecretFilter {
+    pub kind: Option<SecretKind>,
+    /// Case-insensitive provider name, e.g. "Cloudflare API token".
+    pub provider: Option<String>,
+    /// A registrable domain; any host under it matches.
+    pub domain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Facet {
+    pub name: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Facets {
+    pub providers: Vec<Facet>,
+    pub domains: Vec<Facet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,30 +119,47 @@ impl Store {
             .map(|app| upsert_app(&tx, app, 1))
             .transpose()?;
         let byte_size: i64 = cap.reps.iter().map(|r| r.data.len() as i64).sum();
-        let existing: Option<(i64, i64, bool)> = tx
+        let domain = cap.source_url.as_deref().and_then(secrets::domain);
+        let existing: Option<(i64, i64, Option<String>)> = tx
             .query_row(
-                "SELECT id, last_used_at, secret_provider IS NOT NULL FROM paste_items WHERE checksum = ?1",
+                "SELECT id, last_used_at, secret_kind FROM paste_items WHERE checksum = ?1",
                 [checksum],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let outcome = if let Some((id, last_used_at, was_secret)) = existing {
+        let outcome = if let Some((id, last_used_at, old_kind)) = existing {
             if now >= last_used_at {
                 tx.execute(
                     "UPDATE paste_items SET last_used_at = ?1, app_id = coalesce(?2, app_id), \
                      source_url = coalesce(?3, source_url), source_title = coalesce(?4, source_title), \
-                     byte_size = ?5 WHERE id = ?6",
-                    params![now, app_id, cap.source_url, cap.source_title, byte_size, id],
+                     source_domain = coalesce(?5, source_domain), byte_size = ?6 WHERE id = ?7",
+                    params![now, app_id, cap.source_url, cap.source_title, domain, byte_size, id],
                 )?;
                 tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
                 insert_reps(&tx, id, &cap.reps)?;
             }
-            if let Some(secret) = cap.secret.as_ref().filter(|_| !was_secret) {
+            // A key found in a clip filed as an ID replaces the ID.
+            let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
+            let upgrade = |s: &&crate::Secret| match old_kind {
+                None => true,
+                Some(old) => old == SecretKind::Id && s.kind == SecretKind::Key,
+            };
+            if let Some(secret) = cap.secret.as_ref().filter(upgrade) {
                 tx.execute(
-                    "UPDATE paste_items SET text = ?1, title = coalesce(title, ?2), secret_provider = ?3 WHERE id = ?4",
-                    params![secret.masked, secret.name, secret.provider, id],
+                    "UPDATE paste_items SET text = ?1, \
+                     title = CASE WHEN secret_kind = 'id' THEN ?2 ELSE coalesce(title, ?2) END, \
+                     secret_provider = ?3, secret_kind = ?4, source_domain = coalesce(?5, source_domain) \
+                     WHERE id = ?6",
+                    params![secret.masked, secret.name, secret.provider, secret.kind.as_str(), domain, id],
                 )?;
-                file_key(&tx, id, now)?;
+                if old_kind.is_some() {
+                    tx.execute(
+                        "DELETE FROM paste_list_items WHERE item_id = ?1 \
+                         AND list_id = (SELECT id FROM paste_lists WHERE name = ?2)",
+                        params![id, IDS_LIST],
+                    )?;
+                }
+                file_secret(&tx, id, secret.kind, now)?;
                 // Merge the index so the unmasked text's tokens are rewritten too.
                 tx.execute(
                     "INSERT INTO paste_items_fts (paste_items_fts) VALUES ('optimize')",
@@ -124,22 +168,25 @@ impl Store {
             }
             Ingest::Duplicate(id)
         } else {
-            let (text, title, provider) = match &cap.secret {
+            let (text, title, provider, secret_kind) = match &cap.secret {
                 Some(s) => (
                     Some(s.masked.as_str()),
                     Some(s.name.as_str()),
                     Some(s.provider.as_str()),
+                    Some(s.kind.as_str()),
                 ),
                 None => (
                     cap.text().map(|t| truncate(t, INDEXED_TEXT_LIMIT)),
+                    None,
                     None,
                     None,
                 ),
             };
             tx.execute(
                 "INSERT INTO paste_items (kind, text, title, created_at, last_used_at, app_id, \
-                 base_uniform_type, checksum, byte_size, source_url, source_title, secret_provider) \
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 base_uniform_type, checksum, byte_size, source_url, source_title, secret_provider, \
+                 secret_kind, source_domain) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     cap.kind.as_str(),
                     text,
@@ -151,13 +198,15 @@ impl Store {
                     byte_size,
                     cap.source_url,
                     cap.source_title,
-                    provider
+                    provider,
+                    secret_kind,
+                    domain
                 ],
             )?;
             let id = tx.last_insert_rowid();
             insert_reps(&tx, id, &cap.reps)?;
-            if cap.secret.is_some() {
-                file_key(&tx, id, now)?;
+            if let Some(secret) = &cap.secret {
+                file_secret(&tx, id, secret.kind, now)?;
             }
             Ingest::Inserted(id)
         };
@@ -189,8 +238,7 @@ impl Store {
         // The trigram index cannot answer terms shorter than three characters.
         for term in short {
             clauses.push(CONTAINS_SQL);
-            params.push(Value::from(term.to_owned()));
-            params.push(Value::from(term.to_owned()));
+            params.extend(std::iter::repeat_n(Value::from(term.to_owned()), 3));
         }
         if clauses.is_empty() {
             return self.recent(limit);
@@ -242,6 +290,56 @@ impl Store {
             "UPDATE paste_items SET title = ?1 WHERE id = ?2",
             params![title, id],
         )? > 0)
+    }
+
+    /// Attaches a searchable comment to an item; `None` or blank removes it.
+    pub fn set_note(&self, id: i64, note: Option<&str>) -> Result<bool> {
+        let note = note.map(str::trim).filter(|n| !n.is_empty());
+        Ok(self.conn.execute(
+            "UPDATE paste_items SET note = ?1 WHERE id = ?2",
+            params![note, id],
+        )? > 0)
+    }
+
+    /// Detected keys and IDs, most recently used first.
+    pub fn secrets(&self, filter: &SecretFilter, limit: usize) -> Result<Vec<ItemSummary>> {
+        let mut params = Vec::new();
+        let filter = secret_filter_sql(filter, &mut params);
+        params.push(Value::from(limit as i64));
+        let sql = format!(
+            "{SUMMARY_SQL} WHERE {filter} {} LIMIT ?",
+            SortType::Recent.order_sql()
+        );
+        self.summaries(&sql, params)
+    }
+
+    /// Providers and domains among detected keys and IDs, with counts.
+    pub fn secret_facets(&self, kind: Option<SecretKind>) -> Result<Facets> {
+        let filter = SecretFilter {
+            kind,
+            ..SecretFilter::default()
+        };
+        let mut facets = Facets::default();
+        for (column, out) in [
+            ("p.secret_provider", &mut facets.providers),
+            ("p.source_domain", &mut facets.domains),
+        ] {
+            let mut params = Vec::new();
+            let sql = format!(
+                "SELECT {column}, count(*) FROM paste_items p WHERE {} AND {column} IS NOT NULL \
+                 GROUP BY 1 ORDER BY 2 DESC, 1",
+                secret_filter_sql(&filter, &mut params)
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(params_from_iter(params), |r| {
+                Ok(Facet {
+                    name: r.get(0)?,
+                    count: r.get(1)?,
+                })
+            })?;
+            *out = rows.collect::<rusqlite::Result<_>>()?;
+        }
+        Ok(facets)
     }
 
     pub fn delete(&self, id: i64) -> Result<bool> {
@@ -496,11 +594,44 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<ItemSummary> {
         preview: r.get(3)?,
         app_bundle_id: r.get(4)?,
         source_url: r.get(5)?,
-        secret_provider: r.get(6)?,
-        created_at: r.get(7)?,
-        last_used_at: r.get(8)?,
-        byte_size: r.get(9)?,
+        source_domain: r.get(6)?,
+        secret_kind: r
+            .get::<_, Option<String>>(7)?
+            .as_deref()
+            .and_then(SecretKind::parse),
+        secret_provider: r.get(8)?,
+        note: r.get(9)?,
+        created_at: r.get(10)?,
+        last_used_at: r.get(11)?,
+        byte_size: r.get(12)?,
     })
+}
+
+fn secret_filter_sql(filter: &SecretFilter, params: &mut Vec<Value>) -> String {
+    let mut sql = match filter.kind {
+        Some(kind) => {
+            params.push(Value::from(kind.as_str().to_owned()));
+            "p.secret_kind = ?".to_owned()
+        }
+        None => "p.secret_kind IS NOT NULL".to_owned(),
+    };
+    if let Some(provider) = &filter.provider {
+        sql.push_str(" AND p.secret_provider = ? COLLATE NOCASE");
+        params.push(Value::from(provider.clone()));
+    }
+    if let Some(domain) = &filter.domain {
+        // Accept a host or URL as well as a bare domain.
+        let domain = domain.trim();
+        let url = if domain.contains("://") {
+            domain.to_owned()
+        } else {
+            format!("https://{domain}")
+        };
+        let domain = secrets::domain(&url).unwrap_or_else(|| domain.to_ascii_lowercase());
+        sql.push_str(" AND p.source_domain = ?");
+        params.push(Value::from(domain));
+    }
+    sql
 }
 
 fn insert_reps(conn: &Connection, item_id: i64, reps: &[Rep]) -> Result<()> {
@@ -520,8 +651,17 @@ fn insert_reps(conn: &Connection, item_id: i64, reps: &[Rep]) -> Result<()> {
     Ok(())
 }
 
-fn file_key(conn: &Connection, item_id: i64, now: i64) -> rusqlite::Result<()> {
-    let list_id = ensure_list(conn, KEYS_LIST)?;
+fn file_secret(
+    conn: &Connection,
+    item_id: i64,
+    kind: SecretKind,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let list = match kind {
+        SecretKind::Key => KEYS_LIST,
+        SecretKind::Id => IDS_LIST,
+    };
+    let list_id = ensure_list(conn, list)?;
     conn.execute(
         "INSERT OR IGNORE INTO paste_list_items (list_id, item_id, added_at) VALUES (?1, ?2, ?3)",
         params![list_id, item_id, now],
@@ -642,6 +782,7 @@ mod tests {
 
         let mut key = Capture::from_text("sk-live-secret-value".into());
         key.secret = Some(Secret {
+            kind: crate::SecretKind::Key,
             provider: "Test key".into(),
             name: "TEST_KEY".into(),
             masked: "sk-liv…alue".into(),
@@ -711,6 +852,50 @@ mod tests {
             ..links
         };
         assert_eq!(s.list_items(&recent, 10, 5_000).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn v1_databases_migrate_with_domains_kinds_and_searchable_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(schema::V1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO paste_items (kind, text, title, created_at, last_used_at, base_uniform_type, \
+             checksum, byte_size, source_url, secret_provider) VALUES \
+             ('text', 'sk-pro…Ab7c', 'OPENAI_API_KEY', 1, 1, 't', 1, 1, \
+              'https://platform.openai.com/api-keys', 'OpenAI API key'), \
+             ('text', 'meeting notes', NULL, 2, 2, 't', 2, 1, NULL, NULL);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let s = Store::open(&path).unwrap();
+        let keys = s.secrets(&SecretFilter::default(), 10).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].secret_kind, Some(SecretKind::Key));
+        assert_eq!(keys[0].source_domain.as_deref(), Some("openai.com"));
+        let site = SecretFilter {
+            domain: Some("platform.openai.com".into()),
+            provider: Some("openai api KEY".into()),
+            ..SecretFilter::default()
+        };
+        assert_eq!(ids(s.secrets(&site, 10).unwrap()), [1]);
+        let facets = s.secret_facets(None).unwrap();
+        assert_eq!(
+            facets.domains,
+            [Facet {
+                name: "openai.com".into(),
+                count: 1
+            }]
+        );
+        assert_eq!(ids(s.search("OPENAI", 10).unwrap()), [1]);
+
+        s.set_note(2, Some("staging billing")).unwrap();
+        assert_eq!(ids(s.search("billing", 10).unwrap()), [2]);
+        assert_eq!(ids(s.search("bi", 10).unwrap()), [2]);
+        s.set_note(2, None).unwrap();
+        assert!(s.search("billing", 10).unwrap().is_empty());
     }
 
     #[test]

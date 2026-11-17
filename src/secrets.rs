@@ -1,11 +1,12 @@
-//! Recognises API keys and tokens on the clipboard and names them from context.
+//! Recognises API keys and tokens on the clipboard, and IDs copied from web
+//! pages, and names them from context.
 
 use std::ops::Range;
 use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::model::{Capture, Kind, Secret, text_of};
+use crate::model::{Capture, Kind, Secret, SecretKind, text_of};
 
 /// Clips longer than this are documents or logs, not a copied key.
 const MAX_CLIP_BYTES: usize = 8 * 1024;
@@ -19,7 +20,12 @@ const PATTERNS: &[(&str, &str)] = &[
         PRIVATE_KEY,
         r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----(?s:.*?)(?:-----END (?:[A-Z]+ )*PRIVATE KEY-----|\z)",
     ),
+    (
+        "Anthropic admin key",
+        r"(?-u:\b)sk-ant-admin[0-9]*-[A-Za-z0-9_-]{32,}",
+    ),
     ("Anthropic API key", r"(?-u:\b)sk-ant-[A-Za-z0-9_-]{32,}"),
+    ("OpenRouter API key", r"(?-u:\b)sk-or-v1-[A-Za-z0-9]{32,}"),
     (
         "OpenAI API key",
         r"(?-u:\b)sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{32,}",
@@ -51,6 +57,56 @@ const PATTERNS: &[(&str, &str)] = &[
         "JSON Web Token",
         r"(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
     ),
+    (
+        "Cloudflare API token",
+        r"(?-u:\b)cf(?:ut|at)_[A-Za-z0-9]{40,}",
+    ),
+    ("Cloudflare Global API key", r"(?-u:\b)cfk_[A-Za-z0-9]{40,}"),
+    (
+        "Cloudflare Origin CA key",
+        r"(?-u:\b)v1\.0-[0-9A-Fa-f-]{40,}",
+    ),
+    (
+        "Supabase key",
+        r"(?-u:\b)sb_(?:secret|publishable)_[A-Za-z0-9_-]{20,}",
+    ),
+    ("DigitalOcean token", r"(?-u:\b)do[por]_v1_[A-Za-z0-9]{32,}"),
+    (
+        "Sentry token",
+        r"(?-u:\b)(?:sntryu_[a-f0-9]{64}|sntrys_[A-Za-z0-9+/=]+_[A-Za-z0-9+/]{43})",
+    ),
+    ("Notion token", r"(?-u:\b)ntn_[A-Za-z0-9]{40,}"),
+    ("Shopify token", r"(?-u:\b)shp(?:at|ca|pa)_[A-Fa-f0-9]{32,}"),
+    ("PyPI token", r"(?-u:\b)pypi-[A-Za-z0-9_-]{85,}"),
+    (
+        "Tailscale key",
+        r"(?-u:\b)tskey-(?:api|auth|client|scim|webhook)-[A-Za-z0-9-]{16,}",
+    ),
+    ("Vercel token", r"(?-u:\b)vc[piark]_[A-Za-z0-9]{24,}"),
+    ("Replicate API token", r"(?-u:\b)r8_[A-Za-z0-9]{37}(?-u:\b)"),
+    (
+        "Doppler token",
+        r"(?-u:\b)dp\.(?:ct|pt|st|sa|said|scim|audit)\.(?:[a-z0-9_-]{2,35}\.)?[A-Za-z0-9]{40,44}",
+    ),
+];
+
+/// Public suffixes with two labels, so `bbc.co.uk` is a site and `co.uk` is not.
+const TWO_PART_SUFFIXES: &[&str] = &[
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz", "co.jp", "co.kr",
+    "co.in", "co.za", "com.br", "com.cn", "com.hk", "com.mx", "com.sg", "com.tr", "com.tw",
+];
+
+/// Site names that capitalising the domain label would get wrong.
+const SITE_NAMES: &[(&str, &str)] = &[
+    ("digitalocean", "DigitalOcean"),
+    ("github", "GitHub"),
+    ("gitlab", "GitLab"),
+    ("huggingface", "Hugging Face"),
+    ("npmjs", "npm"),
+    ("openai", "OpenAI"),
+    ("openrouter", "OpenRouter"),
+    ("pypi", "PyPI"),
+    ("sendgrid", "SendGrid"),
 ];
 
 /// Words in a page URL or title that make an unrecognised random token a key.
@@ -121,8 +177,9 @@ pub fn detect(text: &str) -> Option<Detection> {
     })
 }
 
-/// Marks `cap` as a secret when its text holds a key. `page` is only called
-/// once something looks like a key, because asking a browser is slow.
+/// Marks `cap` as a secret when its text holds a key, or as an ID when it is
+/// a single identifier copied from a known page. `page` is only called once
+/// something looks like a key or ID, because asking a browser is slow.
 pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
     if !matches!(cap.kind, Kind::Text | Kind::Url) {
         return;
@@ -130,46 +187,170 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
     let Some(text) = text_of(&cap.reps) else {
         return;
     };
-    let Some(found) = detect(text) else { return };
+    let found = detect(text);
+    let id = match &found {
+        Some(Detection {
+            provider: Some(_), ..
+        }) => None,
+        _ => id_span(text),
+    };
+    if found.is_none() && id.is_none() {
+        return;
+    }
     if cap.source_url.is_none()
         && let Some(page) = page()
     {
         cap.source_url = Some(page.url);
         cap.source_title = cap.source_title.take().or(page.title);
     }
-    let provider = match found.provider {
-        Some(provider) => provider,
-        None if has_hint(cap.source_url.as_deref()) || has_hint(cap.source_title.as_deref()) => {
-            "API key"
-        }
-        None => return,
-    };
+    let url_host = cap.source_url.as_deref().and_then(host);
     let site = cap
         .source_url
         .as_deref()
-        .and_then(host)
+        .and_then(domain)
+        .map(|d| site_name(&d));
+    let app = cap.app.as_ref().and_then(|a| a.name.as_deref());
+    let hinted = has_hint(cap.source_url.as_deref()) || has_hint(cap.source_title.as_deref());
+    let (kind, provider, label, ranges) = match found {
+        Some(Detection {
+            provider: Some(provider),
+            ranges,
+        }) => (
+            SecretKind::Key,
+            provider.to_owned(),
+            provider.to_owned(),
+            ranges,
+        ),
+        Some(found) if hinted => {
+            let provider = site.or(app.map(str::to_owned));
+            let label = provider
+                .as_ref()
+                .map_or("API key".to_owned(), |p| format!("{p} key"));
+            let provider = provider.unwrap_or_else(|| "API key".to_owned());
+            (SecretKind::Key, provider, label, found.ranges)
+        }
+        _ => match (id, site) {
+            (Some(range), Some(site)) => {
+                let label = format!("{site} ID");
+                (SecretKind::Id, site, label, vec![range])
+            }
+            _ => return,
+        },
+    };
+    let place = url_host
         .or(cap.source_title.as_deref())
-        .or(cap.app.as_ref().and_then(|a| a.name.as_deref()));
-    let name = assigned_name(&text[..found.ranges[0].start]).map_or_else(
-        || match site {
-            Some(site) => format!("{provider} · {site}"),
-            None => provider.to_owned(),
+        .or(app)
+        .filter(|p| *p != provider);
+    let name = assigned_name(&text[..ranges[0].start]).map_or_else(
+        || match place {
+            Some(place) => format!("{label} · {place}"),
+            None => label,
         },
         str::to_owned,
     );
-    let mut masked = String::with_capacity(text.len());
-    let mut end = 0;
-    for range in &found.ranges {
-        masked.push_str(&text[end..range.start]);
-        masked.push_str(&mask(&text[range.clone()]));
-        end = range.end;
-    }
-    masked.push_str(&text[end..]);
+    let masked = match kind {
+        SecretKind::Id => text.to_owned(),
+        SecretKind::Key => {
+            let mut masked = String::with_capacity(text.len());
+            let mut end = 0;
+            for range in &ranges {
+                masked.push_str(&text[end..range.start]);
+                masked.push_str(&mask(&text[range.clone()]));
+                end = range.end;
+            }
+            masked.push_str(&text[end..]);
+            masked
+        }
+    };
     cap.secret = Some(Secret {
-        provider: provider.to_owned(),
+        kind,
+        provider,
         name,
         masked,
     });
+}
+
+/// The registrable domain of a URL's host: `dash.cloudflare.com` →
+/// `cloudflare.com`, `www.bbc.co.uk` → `bbc.co.uk`.
+pub fn domain(url: &str) -> Option<String> {
+    let host = host(url)?.to_ascii_lowercase();
+    if host.starts_with('[') {
+        return None;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host);
+    }
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    let n = labels.len();
+    let suffix = if n >= 3 && TWO_PART_SUFFIXES.contains(&labels[n - 2..].join(".").as_str()) {
+        3
+    } else {
+        2
+    };
+    Some(labels[n.saturating_sub(suffix)..].join("."))
+}
+
+/// A readable site name for a registrable domain: `cloudflare.com` → "Cloudflare".
+pub fn site_name(domain: &str) -> String {
+    let label = domain.split('.').next().unwrap_or(domain);
+    if let Some((_, name)) = SITE_NAMES.iter().find(|(l, _)| *l == label) {
+        return (*name).to_owned();
+    }
+    let mut chars = label.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// The span of a single copied identifier, alone or as `NAME=value`.
+fn id_span(text: &str) -> Option<Range<usize>> {
+    if text.trim().contains('\n') {
+        return None;
+    }
+    let line = text.trim_end();
+    let end = line.trim_end_matches(['"', '\'']).len();
+    let start = line[..end]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let prefix = &text[..start];
+    if !prefix.trim().is_empty() && assigned_name(prefix).is_none() {
+        return None;
+    }
+    is_id(&text[start..end]).then_some(start..end)
+}
+
+/// UUIDs, hex IDs (not 40- or 64-digit commit hashes), `prefix_` IDs and
+/// long lowercase alphanumeric IDs. Mixed-case random strings look like keys.
+fn is_id(v: &str) -> bool {
+    let b = v.as_bytes();
+    if !(20..=128).contains(&b.len()) {
+        return false;
+    }
+    let digits = b.iter().filter(|c| c.is_ascii_digit()).count();
+    let letters = b.iter().filter(|c| c.is_ascii_alphabetic()).count();
+    let uuid = b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if uuid {
+        return true;
+    }
+    if b.iter().all(u8::is_ascii_hexdigit) {
+        return b.len() != 40 && b.len() != 64 && digits > 0 && letters > 0;
+    }
+    let prefixed = v.split_once('_').is_some_and(|(head, rest)| {
+        (2..=8).contains(&head.len())
+            && head.bytes().all(|c| c.is_ascii_lowercase())
+            && rest.len() >= 14
+            && rest.bytes().all(|c| c.is_ascii_alphanumeric())
+    });
+    let lowercase = b
+        .iter()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    (prefixed || lowercase) && digits >= 3 && letters > 0 && entropy(v) >= 3.5
 }
 
 pub fn mask(secret: &str) -> String {
@@ -303,8 +484,8 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(s.provider, "API key");
-        assert_eq!(s.name, "API key · dash.cloudflare.com");
+        assert_eq!(s.provider, "Cloudflare");
+        assert_eq!(s.name, "Cloudflare key · dash.cloudflare.com");
         assert_eq!(
             annotated(
                 token,
@@ -321,5 +502,46 @@ mod tests {
             annotated("re_compile_pattern_for_parser_module", None, None),
             None
         );
+    }
+
+    #[test]
+    fn cloudflare_tokens_site_providers_and_ids() {
+        let token = format!(
+            "cfut_{}1a2b3c4d",
+            "Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cDe0f"
+        );
+        let s = annotated(&token, Some("https://dash.cloudflare.com/profile"), None).unwrap();
+        assert_eq!(
+            (s.kind, s.provider.as_str()),
+            (SecretKind::Key, "Cloudflare API token")
+        );
+        let router = annotated(&format!("sk-or-v1-{}", "a1".repeat(32)), None, None).unwrap();
+        assert_eq!(router.provider, "OpenRouter API key");
+
+        assert_eq!(
+            domain("https://console.aws.amazon.com/iam"),
+            Some("amazon.com".into())
+        );
+        assert_eq!(domain("https://www.bbc.co.uk/x"), Some("bbc.co.uk".into()));
+        let aws = annotated(
+            "q8Zr2LmN0vX4tY7pW1sK9dF3gH6jB5cA",
+            Some("https://console.aws.amazon.com/iam/home#/security_credentials"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(aws.provider, "Amazon");
+
+        let zone = "023e105f4ecef8ad9ca31a8372d0c353";
+        let url = Some("https://dash.cloudflare.com/023e105f4ecef8ad9ca31a8372d0c353/example.com");
+        let id = annotated(zone, url, None).unwrap();
+        assert_eq!(id.kind, SecretKind::Id);
+        assert_eq!(id.name, "Cloudflare ID · dash.cloudflare.com");
+        assert_eq!(id.masked, zone);
+        let named = annotated(&format!("CF_ZONE_ID={zone}"), url, None).unwrap();
+        assert_eq!(named.name, "CF_ZONE_ID");
+        let commit = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+        let gh = Some("https://github.com/x/y/commit/9fceb02");
+        assert_eq!(annotated(commit, gh, None), None);
+        assert_eq!(annotated(zone, None, None), None);
     }
 }
