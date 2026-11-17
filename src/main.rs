@@ -1,0 +1,429 @@
+use std::error::Error;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::Duration;
+
+use clap::{Parser, Subcommand};
+use cliprust::monitor::{self, Event};
+use cliprust::{
+    Capture, Ingest, ItemSummary, KEYS_LIST, Kind, Rule, SortType, Store, capture, now_ms, secrets,
+};
+
+type CliResult<T = ()> = Result<T, Box<dyn Error>>;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Clipboard history with deduplication and full-text search"
+)]
+struct Cli {
+    /// Database file [default: the platform data directory]
+    #[arg(long, env = "CLIPRUST_DB", global = true)]
+    db: Option<PathBuf>,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Record every clipboard change until interrupted
+    Watch {
+        #[arg(long, default_value_t = 300)]
+        interval_ms: u64,
+        /// Skip clips larger than this many MiB
+        #[arg(long, default_value_t = 64)]
+        max_mb: usize,
+    },
+    /// Show recent items, or the items of a list
+    List {
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        list: Option<String>,
+    },
+    /// Find items containing every term as a substring
+    Search {
+        #[arg(required = true)]
+        terms: Vec<String>,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Print an item's full text
+    Show {
+        id: i64,
+    },
+    /// Put an item back on the clipboard
+    Copy {
+        id: i64,
+        /// Drop rich text, HTML and other formats
+        #[arg(long)]
+        plain: bool,
+    },
+    /// Store text from the argument or stdin without using the clipboard
+    Add {
+        text: Option<String>,
+    },
+    /// Set or remove an item's title
+    Title {
+        id: i64,
+        title: Option<String>,
+    },
+    Delete {
+        id: i64,
+    },
+    /// Delete the whole history
+    Clear,
+    /// Delete unlisted items beyond the newest KEEP
+    Prune {
+        keep: u32,
+    },
+    /// Detected API keys and tokens
+    Keys {
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+    },
+    #[command(subcommand)]
+    Lists(ListsCmd),
+    #[command(subcommand)]
+    Exclude(ExcludeCmd),
+    /// Stop recording until `resume`
+    Pause,
+    Resume,
+    /// Show settings, or change one
+    Settings {
+        #[command(subcommand)]
+        change: Option<SettingsCmd>,
+    },
+    Stats,
+}
+
+#[derive(Subcommand)]
+enum ListsCmd {
+    Ls,
+    /// Create a list; with --rule it is a smart list
+    Add {
+        name: String,
+        /// Smart-list rule as JSON, e.g. {"type":"kind","kind":"url"}
+        #[arg(long)]
+        rule: Option<String>,
+        #[arg(long, default_value = "recent", value_parser = ["recent", "oldest"])]
+        sort: String,
+    },
+    Rm {
+        name: String,
+    },
+    /// Add an item to a manual list
+    Put {
+        name: String,
+        id: i64,
+    },
+    /// Remove an item from a manual list
+    Take {
+        name: String,
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExcludeCmd {
+    Ls,
+    /// Never record copies made while this app is in front
+    Add {
+        bundle_id: String,
+    },
+    Rm {
+        bundle_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Recognise API keys and file them in the Keys list
+    DetectKeys {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Keep at most N unlisted items ("off" for no limit)
+    MaxItems { value: String },
+    /// Delete unlisted items unused for N days ("off" for no limit)
+    MaxAgeDays { value: String },
+}
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cliprust: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> CliResult {
+    let path = match cli.db {
+        Some(path) => path,
+        None => default_db_path()?,
+    };
+    let mut store = Store::open(&path)?;
+    match cli.cmd {
+        Cmd::Watch {
+            interval_ms,
+            max_mb,
+        } => {
+            let config = monitor::Config {
+                interval: Duration::from_millis(interval_ms),
+                max_item_bytes: max_mb << 20,
+            };
+            return watch(store, config, &path);
+        }
+        Cmd::List { limit, list: None } => print_items(&store.recent(limit)?),
+        Cmd::List {
+            limit,
+            list: Some(name),
+        } => {
+            let list = store
+                .list_by_name(&name)?
+                .ok_or_else(|| format!("no list named {name:?}"))?;
+            print_items(&store.list_items(&list, limit, now_ms())?);
+        }
+        Cmd::Search { terms, limit } => print_items(&store.search(&terms.join(" "), limit)?),
+        Cmd::Show { id } => {
+            let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            match item.text() {
+                Some(text) => println!("{text}"),
+                None => {
+                    let formats: Vec<&str> = item.reps.iter().map(|r| r.format.as_str()).collect();
+                    println!(
+                        "{} item, {} bytes, formats: {}",
+                        item.summary.kind,
+                        item.summary.byte_size,
+                        formats.join(", ")
+                    );
+                }
+            }
+        }
+        Cmd::Copy { id, plain } => {
+            let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            let ctx = clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?;
+            capture::write(&ctx, &item.reps, plain)?;
+            store.touch(id, now_ms())?;
+        }
+        Cmd::Add { text } => {
+            let text = match text {
+                Some(text) => text,
+                None => {
+                    let mut text = String::new();
+                    std::io::stdin().read_to_string(&mut text)?;
+                    text
+                }
+            };
+            let mut cap = Capture::from_text(text);
+            if store.settings()?.detect_keys {
+                secrets::annotate(&mut cap, || None);
+            }
+            match store.ingest(&cap, now_ms())? {
+                Ingest::Inserted(id) => println!("stored #{id}"),
+                Ingest::Duplicate(id) => println!("already stored as #{id}, moved to top"),
+            }
+        }
+        Cmd::Title { id, title } => require(store.set_title(id, title.as_deref())?, id)?,
+        Cmd::Delete { id } => require(store.delete(id)?, id)?,
+        Cmd::Clear => println!("deleted {} items", store.clear()?),
+        Cmd::Prune { keep } => println!("deleted {} items", store.prune(Some(keep), None)?),
+        Cmd::Keys { limit } => match store.list_by_name(KEYS_LIST)? {
+            Some(list) => {
+                for it in store.list_items(&list, limit, now_ms())? {
+                    println!(
+                        "{:>6}  {:<40}  {:<22}  {}",
+                        it.id,
+                        it.title.as_deref().unwrap_or("-"),
+                        it.preview.as_deref().map(one_line).unwrap_or_default(),
+                        it.source_url.as_deref().unwrap_or("-")
+                    );
+                }
+            }
+            None => println!("no keys yet (enable with `cliprust settings detect-keys on`)"),
+        },
+        Cmd::Lists(cmd) => lists(&store, cmd)?,
+        Cmd::Exclude(ExcludeCmd::Ls) => store.excludes()?.iter().for_each(|b| println!("{b}")),
+        Cmd::Exclude(ExcludeCmd::Add { bundle_id }) => store.add_exclude(&bundle_id)?,
+        Cmd::Exclude(ExcludeCmd::Rm { bundle_id }) => {
+            if !store.remove_exclude(&bundle_id)? {
+                return Err(format!("{bundle_id} was not excluded").into());
+            }
+        }
+        Cmd::Pause | Cmd::Resume => {
+            let mut settings = store.settings()?;
+            settings.paused = matches!(cli.cmd, Cmd::Pause);
+            store.save_settings(&settings)?;
+        }
+        Cmd::Settings { change } => {
+            let mut settings = store.settings()?;
+            match change {
+                None => {}
+                Some(SettingsCmd::DetectKeys { state }) => settings.detect_keys = state == "on",
+                Some(SettingsCmd::MaxItems { value }) => settings.max_items = limit_value(&value)?,
+                Some(SettingsCmd::MaxAgeDays { value }) => {
+                    settings.max_age_days = limit_value(&value)?
+                }
+            }
+            store.save_settings(&settings)?;
+            println!("{}", serde_json::to_string_pretty(&settings)?);
+        }
+        Cmd::Stats => {
+            let s = store.stats()?;
+            println!("items          {}", s.items);
+            println!("content        {}", human_bytes(s.raw_bytes));
+            println!("compressed     {}", human_bytes(s.stored_bytes));
+            println!(
+                "database file  {}  ({})",
+                human_bytes(s.file_bytes),
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn lists(store: &Store, cmd: ListsCmd) -> CliResult {
+    match cmd {
+        ListsCmd::Ls => {
+            for list in store.lists()? {
+                let rule = match &list.rule {
+                    Some(rule) => serde_json::to_string(rule)?,
+                    None => "manual".to_owned(),
+                };
+                println!("{:<20}  {:<6}  {rule}", list.name, list.sort.as_str());
+            }
+        }
+        ListsCmd::Add { name, rule, sort } => {
+            let rule: Option<Rule> = rule.as_deref().map(serde_json::from_str).transpose()?;
+            let sort = SortType::parse(&sort).unwrap_or_default();
+            store.create_list(&name, rule.as_ref(), sort)?;
+        }
+        ListsCmd::Rm { name } => {
+            if !store.delete_list(&name)? {
+                return Err(format!("no list named {name:?}").into());
+            }
+        }
+        ListsCmd::Put { name, id } => {
+            if store.list_by_name(&name)?.is_some_and(|l| l.rule.is_some()) {
+                return Err(
+                    format!("{name:?} is a smart list; its items come from its rule").into(),
+                );
+            }
+            store.add_to_list(&name, id, now_ms())?;
+        }
+        ListsCmd::Take { name, id } => {
+            if !store.remove_from_list(&name, id)? {
+                return Err(format!("item #{id} is not in {name:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn watch(store: Store, config: monitor::Config, path: &Path) -> CliResult {
+    eprintln!(
+        "cliprust: watching the clipboard, saving to {}",
+        path.display()
+    );
+    let on_event = |event: Event| match event {
+        Event::Stored {
+            outcome: Ingest::Inserted(id),
+            kind,
+            secret,
+        } => {
+            eprintln!("stored #{id} ({kind}{})", if secret { ", key" } else { "" });
+        }
+        Event::Stored {
+            outcome: Ingest::Duplicate(id),
+            ..
+        } => eprintln!("seen again #{id}"),
+        Event::Skipped(reason) => eprintln!("skipped: {reason}"),
+        Event::Failed(e) => eprintln!("error: {e}"),
+    };
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(move || {
+            if let Err(e) = monitor::run(store, config, on_event) {
+                eprintln!("cliprust: {e}");
+                std::process::exit(1);
+            }
+        });
+        cliprust::platform::run_main_loop()
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(monitor::run(store, config, on_event)?)
+}
+
+fn print_items(items: &[ItemSummary]) {
+    let now = now_ms();
+    for it in items {
+        let label = match (it.kind, it.title.as_deref(), it.preview.as_deref()) {
+            (Kind::Image, _, _) => format!("[image, {}]", human_bytes(it.byte_size)),
+            (_, Some(title), _) => title.to_owned(),
+            (_, None, preview) => one_line(preview.unwrap_or_default()),
+        };
+        println!(
+            "{:>6}  {:<5}  {:>4}  {:<28}  {label}",
+            it.id,
+            it.kind,
+            age(now - it.last_used_at),
+            it.app_bundle_id.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+fn one_line(s: &str) -> String {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    match s.char_indices().nth(80) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s,
+    }
+}
+
+fn age(ms: i64) -> String {
+    match ms / 1000 {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+fn human_bytes(n: i64) -> String {
+    match n {
+        n if n < 1024 => format!("{n} B"),
+        n if n < 1 << 20 => format!("{:.1} KiB", n as f64 / 1024.0),
+        n => format!("{:.1} MiB", n as f64 / f64::from(1 << 20)),
+    }
+}
+
+fn limit_value(value: &str) -> CliResult<Option<u32>> {
+    if value == "off" {
+        return Ok(None);
+    }
+    Ok(Some(value.parse().map_err(|_| {
+        format!("expected a number or \"off\", got {value:?}")
+    })?))
+}
+
+fn require(found: bool, id: i64) -> CliResult {
+    if found {
+        Ok(())
+    } else {
+        Err(format!("no item #{id}").into())
+    }
+}
+
+fn default_db_path() -> CliResult<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set; pass --db")?);
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support")
+    } else {
+        std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from)
+    };
+    Ok(base.join("cliprust/cliprust.db"))
+}
