@@ -5,6 +5,9 @@ edition = "2024"
 description = "Low-memory clipboard history core with SQLite FTS5 search"
 publish = false
 
+[lib]
+crate-type = ["lib", "staticlib"]
+
 [dependencies]
 clap = { version = "4.6.8", features = ["derive", "env"] }
 clipboard-rs = { version = "0.3.5", default-features = false }
@@ -35,3 +38,5 @@ strip = true
 [features]
 default = ["pastenow-import"]
 pastenow-import = ["dep:lzfse_rust", "dep:plist", "dep:tempfile"]
+# C ABI for the macOS app (app/).
+ffi = []

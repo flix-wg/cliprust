@@ -298,21 +298,7 @@ fn run(cli: Cli) -> CliResult {
 fn import_pastenow(store: &mut Store, path: Option<PathBuf>) -> CliResult {
     use cliprust::import_pastenow;
 
-    let src = match path {
-        Some(path) => path,
-        None => home()?.join(
-            "Library/Group Containers/KAQ3M6FSM7.app.pastenow.PasteNow/Documents/PasteNow.sqlite",
-        ),
-    };
-    if !src.is_file() {
-        return Err(format!("no PasteNow store at {}", src.display()).into());
-    }
-    // A fresh 0700 directory with a random name, removed when dropped.
-    let tmp = tempfile::Builder::new()
-        .prefix("cliprust-pastenow-")
-        .tempdir()?;
-    let copy = snapshot_pastenow(&src, tmp.path())?;
-    let report = import_pastenow::import(store, &copy)?;
+    let report = import_pastenow::import_live(store, path)?;
 
     println!(
         "imported {} items, {} already present",
@@ -327,34 +313,6 @@ fn import_pastenow(store: &mut Store, path: Option<PathBuf>) -> CliResult {
     }
     println!("excluded {} apps", report.excludes);
     Ok(())
-}
-
-/// Copies the store with its WAL and external blobs, so the live files are
-/// never opened.
-#[cfg(feature = "pastenow-import")]
-fn snapshot_pastenow(src: &Path, dir: &Path) -> CliResult<PathBuf> {
-    let name = src.file_name().ok_or("store path has no file name")?;
-    for suffix in ["", "-wal", "-shm"] {
-        let mut file = name.to_owned();
-        file.push(suffix);
-        let from = src.with_file_name(&file);
-        if suffix.is_empty() || from.exists() {
-            std::fs::copy(&from, dir.join(&file))?;
-        }
-    }
-    let external_dir = cliprust::import_pastenow::EXTERNAL_DATA_DIR;
-    let external = src.with_file_name(external_dir);
-    if external.is_dir() {
-        let to = dir.join(external_dir);
-        std::fs::create_dir_all(&to)?;
-        for entry in std::fs::read_dir(&external)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                std::fs::copy(entry.path(), to.join(entry.file_name()))?;
-            }
-        }
-    }
-    Ok(dir.join(name))
 }
 
 fn lists(store: &Store, cmd: ListsCmd) -> CliResult {

@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
@@ -55,6 +55,58 @@ struct SourceItem {
     bundle_id: Option<String>,
     app_name: Option<String>,
     data: Option<Vec<u8>>,
+}
+
+/// PasteNow's store in its group container.
+pub fn default_store_path() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(
+        "Library/Group Containers/KAQ3M6FSM7.app.pastenow.PasteNow/Documents/PasteNow.sqlite",
+    ))
+}
+
+/// Imports from a private snapshot of a store that may still be in use.
+pub fn import_live(store: &mut Store, path: Option<PathBuf>) -> Result<ImportReport> {
+    let src = path
+        .or_else(default_store_path)
+        .filter(|p| p.is_file())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no PasteNow store found")
+        })?;
+    // A fresh 0700 directory with a random name, removed when dropped.
+    let tmp = tempfile::Builder::new()
+        .prefix("cliprust-pastenow-")
+        .tempdir()?;
+    let copy = snapshot(&src, tmp.path())?;
+    import(store, &copy)
+}
+
+/// Copies the store with its WAL and external blobs, so the live files are
+/// never opened.
+fn snapshot(src: &Path, dir: &Path) -> Result<PathBuf> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("store path has no file name"))?;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = name.to_owned();
+        file.push(suffix);
+        let from = src.with_file_name(&file);
+        if suffix.is_empty() || from.exists() {
+            std::fs::copy(&from, dir.join(&file))?;
+        }
+    }
+    let external_dir = EXTERNAL_DATA_DIR;
+    let external = src.with_file_name(external_dir);
+    if external.is_dir() {
+        let to = dir.join(external_dir);
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(&external)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+            }
+        }
+    }
+    Ok(dir.join(name))
 }
 
 /// Imports `PasteNow.sqlite`, oldest item first. Re-running adds nothing new:

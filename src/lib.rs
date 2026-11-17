@@ -1,6 +1,8 @@
 //! Clipboard history core: capture, dedup, compressed storage and FTS5 search.
 
 pub mod capture;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 #[cfg(feature = "pastenow-import")]
 pub mod import_pastenow;
 pub mod model;
