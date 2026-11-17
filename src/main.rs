@@ -307,11 +307,12 @@ fn import_pastenow(store: &mut Store, path: Option<PathBuf>) -> CliResult {
     if !src.is_file() {
         return Err(format!("no PasteNow store at {}", src.display()).into());
     }
-    let tmp = std::env::temp_dir().join(format!("cliprust-pastenow-{}", std::process::id()));
-    let result =
-        snapshot_pastenow(&src, &tmp).and_then(|copy| Ok(import_pastenow::import(store, &copy)?));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let report = result?;
+    // A fresh 0700 directory with a random name, removed when dropped.
+    let tmp = tempfile::Builder::new()
+        .prefix("cliprust-pastenow-")
+        .tempdir()?;
+    let copy = snapshot_pastenow(&src, tmp.path())?;
+    let report = import_pastenow::import(store, &copy)?;
 
     println!(
         "imported {} items, {} already present",
@@ -332,10 +333,6 @@ fn import_pastenow(store: &mut Store, path: Option<PathBuf>) -> CliResult {
 /// never opened.
 #[cfg(feature = "pastenow-import")]
 fn snapshot_pastenow(src: &Path, dir: &Path) -> CliResult<PathBuf> {
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(dir)?;
     let name = src.file_name().ok_or("store path has no file name")?;
     for suffix in ["", "-wal", "-shm"] {
         let mut file = name.to_owned();

@@ -72,7 +72,10 @@ impl Rule {
             }
             Rule::CreatedToday => {
                 params.push(now.into());
-                "p.created_at >= unixepoch(? / 1000, 'unixepoch', 'localtime', 'start of day', 'utc') * 1000".into()
+                params.push(now.into());
+                "p.created_at >= unixepoch(? / 1000, 'unixepoch', 'localtime', 'start of day', 'utc') * 1000 \
+                 AND p.created_at < unixepoch(? / 1000, 'unixepoch', 'localtime', 'start of day', '+1 day', 'utc') * 1000"
+                    .into()
             }
             Rule::Secret => "p.secret_provider IS NOT NULL".into(),
         }

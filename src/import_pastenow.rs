@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags};
@@ -19,6 +19,9 @@ pub const EXTERNAL_DATA_DIR: &str = ".PasteNow_SUPPORT/_EXTERNAL_DATA";
 
 /// Seconds from the Unix epoch to 2001-01-01, CoreData's reference date.
 const APPLE_EPOCH: f64 = 978_307_200.0;
+/// Bound on a blob before and after decompression, so a damaged store
+/// cannot exhaust memory.
+const MAX_BLOB_BYTES: u64 = 64 << 20;
 const TEXT_UTI: &str = "public.utf8-plain-text";
 const FILE_UTI: &str = "public.file-url";
 const IMAGE_UTIS: &[&str] = &["public.png", "public.tiff", "public.jpeg", "public.heic"];
@@ -65,6 +68,7 @@ pub fn import(store: &mut Store, store_path: &Path) -> Result<ImportReport> {
         .parent()
         .unwrap_or(Path::new("."))
         .join(EXTERNAL_DATA_DIR);
+    let detect_keys = store.settings()?.detect_keys;
     let mut report = ImportReport::default();
     let mut members: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
 
@@ -82,13 +86,16 @@ pub fn import(store: &mut Store, store_path: &Path) -> Result<ImportReport> {
             app_name: row.get(7)?,
             data: row.get(8)?,
         };
-        let (cap, now) = match to_capture(item, &external) {
+        let (mut cap, now) = match to_capture(item, &external) {
             Ok(found) => found,
             Err(reason) => {
                 report.skipped.push((pk, reason));
                 continue;
             }
         };
+        if detect_keys {
+            crate::secrets::annotate(&mut cap, || None);
+        }
         let id = match store.ingest(&cap, now)? {
             Ingest::Inserted(id) => {
                 report.imported += 1;
@@ -99,7 +106,11 @@ pub fn import(store: &mut Store, store_path: &Path) -> Result<ImportReport> {
                 id
             }
         };
-        if let Some(title) = title.as_deref().filter(|t| !t.trim().is_empty()) {
+        if cap.secret.is_none()
+            && let Some(title) = title.as_deref().filter(|t| {
+                !t.trim().is_empty() && !(detect_keys && crate::secrets::detect(t).is_some())
+            })
+        {
             store.set_title(id, Some(title))?;
         }
         if let Some(list) = list {
@@ -188,6 +199,15 @@ fn import_lists(
     Ok(())
 }
 
+fn read_bounded(reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    reader.take(MAX_BLOB_BYTES + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > MAX_BLOB_BYTES {
+        return Err(std::io::Error::other("larger than 64 MiB"));
+    }
+    Ok(out)
+}
+
 fn to_capture(item: SourceItem, external: &Path) -> std::result::Result<(Capture, i64), String> {
     let ts = item.timestamp.ok_or("no timestamp")?;
     let now = ((ts + APPLE_EPOCH) * 1000.0).round() as i64;
@@ -201,19 +221,17 @@ fn to_capture(item: SourceItem, external: &Path) -> std::result::Result<(Capture
             if uuid.len() != 36 || !uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
                 return Err("malformed external data reference".into());
             }
-            Cow::Owned(
-                std::fs::read(external.join(uuid))
-                    .map_err(|e| format!("external data {uuid}: {e}"))?,
-            )
+            let file = std::fs::File::open(external.join(uuid))
+                .map_err(|e| format!("external data {uuid}: {e}"))?;
+            Cow::Owned(read_bounded(file).map_err(|e| format!("external data {uuid}: {e}"))?)
         }
         _ => return Err("unknown data envelope".into()),
     };
     let plist = if payload.starts_with(b"bplist00") {
         payload.into_owned()
     } else {
-        let mut out = Vec::new();
-        lzfse_rust::decode_bytes(&payload, &mut out).map_err(|e| format!("decompress: {e}"))?;
-        out
+        let mut decoder = lzfse_rust::LzfseRingDecoder::default();
+        read_bounded(decoder.reader_bytes(&payload)).map_err(|e| format!("decompress: {e}"))?
     };
     let entries = pasteboard_entries(&plist)?;
 
@@ -539,6 +557,7 @@ mod tests {
                 .any(|i| i.id == text.id)
         );
         assert!(copied_today(text.created_at + 2 * 86_400_000).is_empty());
+        assert!(copied_today(text.created_at - 2 * 86_400_000).is_empty());
 
         let again = import(&mut store, &path).unwrap();
         assert_eq!((again.imported, again.duplicates), (0, 2));
