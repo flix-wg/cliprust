@@ -8,6 +8,8 @@ publish = false
 [dependencies]
 clap = { version = "4.6.8", features = ["derive", "env"] }
 clipboard-rs = { version = "0.3.5", default-features = false }
+lzfse_rust = { version = "0.2.1", optional = true }
+plist = { version = "1.10.4", default-features = false, optional = true }
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-perl"] }
 rusqlite = { version = "0.43.0", features = ["bundled-full"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -28,3 +30,7 @@ tempfile = "3.27.0"
 lto = true
 codegen-units = 1
 strip = true
+
+[features]
+default = ["pastenow-import"]
+pastenow-import = ["dep:lzfse_rust", "dep:plist"]
