@@ -27,6 +27,8 @@ mod types {
 
 pub use types::{FILE_TYPE, IMAGE_TYPES, TEXT_TYPE};
 
+const MAX_SOURCE_URL_BYTES: usize = 8 * 1024;
+
 /// Markers from nspasteboard.org that password managers and other apps set
 /// on content that must not be recorded.
 pub const PRIVATE_MARKERS: &[&str] = &[
@@ -91,12 +93,10 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
     };
 
     let mut cap = if let Some(files) = files {
-        let joined = files.join("\n");
         Capture {
             kind: Kind::File,
-            text: Some(joined.clone()),
             base_uniform_type: FILE_TYPE.to_owned(),
-            reps: vec![Rep::new(format::FILES, joined.into_bytes())],
+            reps: vec![Rep::new(format::FILES, files.join("\n").into_bytes())],
             app: None,
             source_url: None,
             source_title: None,
@@ -123,8 +123,7 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
     {
         Capture {
             kind: Kind::Text,
-            reps: vec![Rep::new(format::HTML, html.clone().into_bytes())],
-            text: Some(html),
+            reps: vec![Rep::new(format::HTML, html.into_bytes())],
             base_uniform_type: types::HTML_TYPE.to_owned(),
             app: None,
             source_url: None,
@@ -138,7 +137,6 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
     {
         Capture {
             kind: Kind::Image,
-            text: None,
             base_uniform_type: ty.to_owned(),
             reps: vec![Rep::new(ty, data)],
             app: None,
@@ -158,6 +156,7 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
         .iter()
         .filter(|ty| has(ty))
         .find_map(|ty| ctx.get_buffer(ty).ok())
+        .filter(|bytes| bytes.len() <= MAX_SOURCE_URL_BYTES)
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|url| url.trim_end_matches('\0').trim().to_owned())
         .filter(|url| !url.is_empty());

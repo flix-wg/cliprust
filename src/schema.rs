@@ -85,6 +85,8 @@ pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
+    // Deleted clips and replaced secrets are overwritten, not left in free pages.
+    conn.pragma_update(None, "secure_delete", true)?;
     // Small page cache keeps the resident set low; the hot data is tiny.
     conn.pragma_update(None, "cache_size", -1024)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))

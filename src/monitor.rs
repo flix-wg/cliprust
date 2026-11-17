@@ -31,7 +31,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             interval: Duration::from_millis(300),
-            max_item_bytes: 64 << 20,
+            max_item_bytes: 32 << 20,
         }
     }
 }

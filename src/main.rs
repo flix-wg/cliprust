@@ -32,7 +32,7 @@ enum Cmd {
         #[arg(long, default_value_t = 300)]
         interval_ms: u64,
         /// Skip clips larger than this many MiB
-        #[arg(long, default_value_t = 64)]
+        #[arg(long, default_value_t = 32)]
         max_mb: usize,
     },
     /// Show recent items, or the items of a list

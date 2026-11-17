@@ -265,29 +265,31 @@ fn to_capture(item: SourceItem, external: &Path) -> std::result::Result<(Capture
         .map(|t| String::from_utf8_lossy(t).into_owned());
     let mut files_rep =
         (!files.is_empty()).then(|| Rep::new(format::FILES, files.join("\n").into_bytes()));
-    let mut text_rep = text.map(|t| Rep::new(format::TEXT, t));
+    let mut text_rep = text_str.map(|t| Rep::new(format::TEXT, t.into_bytes()));
 
     let mut reps = Vec::new();
-    let (kind, base_uniform_type, cap_text) = match kind {
+    let (kind, base_uniform_type) = match kind {
         Kind::File => {
             reps.extend(files_rep.take());
-            (Kind::File, FILE_UTI.to_owned(), Some(files.join("\n")))
+            (Kind::File, FILE_UTI.to_owned())
         }
         Kind::Image => {
             let image = images.remove(0);
             let ty = image.format.clone();
             reps.push(image);
-            (Kind::Image, ty, text_str)
+            (Kind::Image, ty)
         }
         _ => {
-            reps.extend(text_rep.take());
-            let text = text_str.unwrap_or_default();
+            let text = text_rep
+                .take()
+                .unwrap_or_else(|| Rep::new(format::TEXT, Vec::new()));
             let kind = if base == "public.url" {
                 Kind::Url
             } else {
-                Capture::from_text(text.clone()).kind
+                Capture::from_text(String::from_utf8_lossy(&text.data).into_owned()).kind
             };
-            (kind, TEXT_UTI.to_owned(), Some(text))
+            reps.push(text);
+            (kind, TEXT_UTI.to_owned())
         }
     };
     reps.extend(files_rep);
@@ -305,7 +307,6 @@ fn to_capture(item: SourceItem, external: &Path) -> std::result::Result<(Capture
     Ok((
         Capture {
             kind,
-            text: cap_text,
             base_uniform_type,
             reps,
             app,
@@ -515,7 +516,7 @@ mod tests {
         let item = store.get(text.id).unwrap().unwrap();
         let formats: Vec<&str> = item.reps.iter().map(|r| r.format.as_str()).collect();
         assert_eq!(formats, [format::TEXT, format::RTF]);
-        assert_eq!(item.text().as_deref(), Some("hello world"));
+        assert_eq!(item.text(), Some("hello world"));
         let image_item = store.get(image.id).unwrap().unwrap();
         assert_eq!(image_item.reps, [Rep::new("public.png", PNG.to_vec())]);
 

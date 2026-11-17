@@ -3,7 +3,9 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter, types::Value};
+use rusqlite::{
+    Connection, OptionalExtension, Row, TransactionBehavior, params, params_from_iter, types::Value,
+};
 
 use crate::model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, Settings};
 use crate::rules::{CONTAINS_SQL, Rule, SortType};
@@ -74,33 +76,54 @@ impl Store {
         Ok(Self { conn })
     }
 
-    /// Stores a capture, or moves the existing copy to the top when its
-    /// checksum is already known.
+    /// Stores a capture. A copy whose checksum is already known updates that
+    /// item instead: a newer copy brings its formats and moves it to the top,
+    /// and a newly detected key is masked and filed in the Keys list.
     pub fn ingest(&mut self, cap: &Capture, now: i64) -> Result<Ingest> {
         let checksum = cap.checksum() as i64;
-        let tx = self.conn.transaction()?;
+        // Take the write lock up front so a concurrent writer cannot void
+        // this transaction's snapshot between the lookup and the write.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let app_id = cap
             .app
             .as_ref()
             .map(|app| upsert_app(&tx, app, 1))
             .transpose()?;
-        let existing: Option<i64> = tx
+        let byte_size: i64 = cap.reps.iter().map(|r| r.data.len() as i64).sum();
+        let existing: Option<(i64, i64, bool)> = tx
             .query_row(
-                "SELECT id FROM paste_items WHERE checksum = ?1",
+                "SELECT id, last_used_at, secret_provider IS NOT NULL FROM paste_items WHERE checksum = ?1",
                 [checksum],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let outcome = if let Some(id) = existing {
-            tx.execute(
-                "UPDATE paste_items SET last_used_at = max(last_used_at, ?1), app_id = coalesce(?2, app_id), \
-                 source_url = coalesce(?3, source_url), source_title = coalesce(?4, source_title) \
-                 WHERE id = ?5",
-                params![now, app_id, cap.source_url, cap.source_title, id],
-            )?;
+        let outcome = if let Some((id, last_used_at, was_secret)) = existing {
+            if now >= last_used_at {
+                tx.execute(
+                    "UPDATE paste_items SET last_used_at = ?1, app_id = coalesce(?2, app_id), \
+                     source_url = coalesce(?3, source_url), source_title = coalesce(?4, source_title), \
+                     byte_size = ?5 WHERE id = ?6",
+                    params![now, app_id, cap.source_url, cap.source_title, byte_size, id],
+                )?;
+                tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
+                insert_reps(&tx, id, &cap.reps)?;
+            }
+            if let Some(secret) = cap.secret.as_ref().filter(|_| !was_secret) {
+                tx.execute(
+                    "UPDATE paste_items SET text = ?1, title = coalesce(title, ?2), secret_provider = ?3 WHERE id = ?4",
+                    params![secret.masked, secret.name, secret.provider, id],
+                )?;
+                file_key(&tx, id, now)?;
+                // Merge the index so the unmasked text's tokens are rewritten too.
+                tx.execute(
+                    "INSERT INTO paste_items_fts (paste_items_fts) VALUES ('optimize')",
+                    [],
+                )?;
+            }
             Ingest::Duplicate(id)
         } else {
-            let byte_size: usize = cap.reps.iter().map(|r| r.data.len()).sum();
             let (text, title, provider) = match &cap.secret {
                 Some(s) => (
                     Some(s.masked.as_str()),
@@ -108,7 +131,7 @@ impl Store {
                     Some(s.provider.as_str()),
                 ),
                 None => (
-                    cap.text.as_deref().map(|t| truncate(t, INDEXED_TEXT_LIMIT)),
+                    cap.text().map(|t| truncate(t, INDEXED_TEXT_LIMIT)),
                     None,
                     None,
                 ),
@@ -125,34 +148,16 @@ impl Store {
                     app_id,
                     cap.base_uniform_type,
                     checksum,
-                    byte_size as i64,
+                    byte_size,
                     cap.source_url,
                     cap.source_title,
                     provider
                 ],
             )?;
             let id = tx.last_insert_rowid();
-            let mut stmt = tx.prepare(
-                "INSERT INTO paste_item_data (item_id, position, format, payload, raw_size) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for (pos, rep) in cap.reps.iter().enumerate() {
-                let payload = zstd::bulk::compress(&rep.data, ZSTD_LEVEL)?;
-                stmt.execute(params![
-                    id,
-                    pos as i64,
-                    rep.format,
-                    payload,
-                    rep.data.len() as i64
-                ])?;
-            }
-            drop(stmt);
+            insert_reps(&tx, id, &cap.reps)?;
             if cap.secret.is_some() {
-                let list_id = ensure_list(&tx, KEYS_LIST)?;
-                tx.execute(
-                    "INSERT OR IGNORE INTO paste_list_items (list_id, item_id, added_at) VALUES (?1, ?2, ?3)",
-                    params![list_id, id, now],
-                )?;
+                file_key(&tx, id, now)?;
             }
             Ingest::Inserted(id)
         };
@@ -498,6 +503,32 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<ItemSummary> {
     })
 }
 
+fn insert_reps(conn: &Connection, item_id: i64, reps: &[Rep]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO paste_item_data (item_id, position, format, payload, raw_size) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    for (pos, rep) in reps.iter().enumerate() {
+        let payload = zstd::bulk::compress(&rep.data, ZSTD_LEVEL)?;
+        stmt.execute(params![
+            item_id,
+            pos as i64,
+            rep.format,
+            payload,
+            rep.data.len() as i64
+        ])?;
+    }
+    Ok(())
+}
+
+fn file_key(conn: &Connection, item_id: i64, now: i64) -> rusqlite::Result<()> {
+    let list_id = ensure_list(conn, KEYS_LIST)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO paste_list_items (list_id, item_id, added_at) VALUES (?1, ?2, ?3)",
+        params![list_id, item_id, now],
+    )?;
+    Ok(())
+}
+
 fn upsert_app(conn: &Connection, app: &AppInfo, copies: i64) -> rusqlite::Result<i64> {
     conn.query_row(
         "INSERT INTO applications (bundle_id, name, path, copy_count) VALUES (?1, ?2, ?3, ?4) \
@@ -621,9 +652,36 @@ mod tests {
         let keys = s.list_by_name(KEYS_LIST).unwrap().unwrap();
         assert_eq!(ids(s.list_items(&keys, 10, 3).unwrap()), [key_id]);
         assert_eq!(
-            s.get(key_id).unwrap().unwrap().text().as_deref(),
+            s.get(key_id).unwrap().unwrap().text(),
             Some("sk-live-secret-value")
         );
+    }
+
+    #[test]
+    fn newer_duplicates_refresh_formats_and_late_detection_masks_keys() {
+        let mut s = store();
+        let styled = |html: &str| {
+            let mut cap = Capture::from_text("same words".into());
+            cap.reps
+                .push(Rep::new(format::HTML, html.as_bytes().to_vec()));
+            cap
+        };
+        let id = s.ingest(&styled("<b>same words</b>"), 10).unwrap().id();
+        s.ingest(&styled("<i>same words</i>"), 20).unwrap();
+        s.ingest(&styled("<u>same words</u>"), 5).unwrap();
+        let reps = s.get(id).unwrap().unwrap().reps;
+        assert_eq!(reps[1].data, b"<i>same words</i>");
+        assert_eq!(s.recent(1).unwrap()[0].last_used_at, 20);
+
+        let key = "TOKEN=ghp_Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0FeDcBa99";
+        let plain = add(&mut s, key, None, 30);
+        assert_eq!(ids(s.search("Rq5Po4", 10).unwrap()), [plain]);
+        let mut detected = Capture::from_text(key.into());
+        crate::secrets::annotate(&mut detected, || None);
+        assert_eq!(s.ingest(&detected, 40).unwrap(), Ingest::Duplicate(plain));
+        assert!(s.search("Rq5Po4", 10).unwrap().is_empty());
+        let keys = s.list_by_name(KEYS_LIST).unwrap().unwrap();
+        assert_eq!(ids(s.list_items(&keys, 10, 50).unwrap()), [plain]);
     }
 
     #[test]

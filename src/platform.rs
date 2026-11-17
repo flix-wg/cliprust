@@ -96,20 +96,26 @@ fn osascript(script: &str) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    // Drain stdout while waiting so a long title cannot fill the pipe.
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ =
+            std::io::Read::read_to_string(&mut std::io::Read::take(stdout, 16 * 1024), &mut out);
+        out
+    });
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match child.try_wait().ok()? {
-            Some(status) if status.success() => break,
-            Some(_) => return None,
-            None if Instant::now() >= deadline => {
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                break false;
             }
-            None => std::thread::sleep(Duration::from_millis(20)),
         }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    Some(out)
+    };
+    let out = reader.join().ok()?;
+    success.then_some(out)
 }

@@ -77,7 +77,6 @@ pub struct AppInfo {
 #[derive(Debug, Clone)]
 pub struct Capture {
     pub kind: Kind,
-    pub text: Option<String>,
     pub base_uniform_type: String,
     pub reps: Vec<Rep>,
     pub app: Option<AppInfo>,
@@ -104,14 +103,18 @@ impl Capture {
         };
         Self {
             kind,
-            reps: vec![Rep::new(format::TEXT, text.clone().into_bytes())],
-            text: Some(text),
+            reps: vec![Rep::new(format::TEXT, text.into_bytes())],
             base_uniform_type: TEXT_TYPE.to_owned(),
             app: None,
             source_url: None,
             source_title: None,
             secret: None,
         }
+    }
+
+    /// The searchable text, read from the representations so it is held once.
+    pub fn text(&self) -> Option<&str> {
+        text_of(&self.reps)
     }
 
     pub fn checksum(&self) -> u64 {
@@ -123,6 +126,12 @@ impl Capture {
         }
         hasher.digest()
     }
+}
+
+pub(crate) fn text_of(reps: &[Rep]) -> Option<&str> {
+    reps.iter()
+        .find(|r| [format::TEXT, format::FILES, format::HTML].contains(&r.format.as_str()))
+        .and_then(|r| std::str::from_utf8(&r.data).ok())
 }
 
 fn looks_like_url(text: &str) -> bool {
@@ -160,11 +169,8 @@ pub struct Item {
 }
 
 impl Item {
-    pub fn text(&self) -> Option<String> {
-        self.reps
-            .iter()
-            .find(|r| r.format == format::TEXT || r.format == format::FILES)
-            .map(|r| String::from_utf8_lossy(&r.data).into_owned())
+    pub fn text(&self) -> Option<&str> {
+        text_of(&self.reps)
     }
 }
 
