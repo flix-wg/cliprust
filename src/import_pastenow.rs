@@ -389,13 +389,18 @@ fn translate_filter(json: &[u8]) -> std::result::Result<Rule, String> {
 }
 
 fn translate_predicate(predicate: &Json) -> std::result::Result<Rule, String> {
+    if predicate
+        .pointer("/creationDate/dynamicDate")
+        .and_then(Json::as_str)
+        == Some("today")
+    {
+        return Ok(Rule::CreatedToday);
+    }
     let kind = match predicate.get("uniformType").and_then(Json::as_str) {
         Some("public.text") => Kind::Text,
         Some("public.url") => Kind::Url,
         Some("public.image") => Kind::Image,
         Some(FILE_UTI) => Kind::File,
-        // dynamicDate tokens such as "today" mean calendar ranges, which no
-        // Rule expresses; CopiedWithin is a rolling window.
         _ => return Err(format!("unsupported predicate {predicate}")),
     };
     Ok(Rule::Kind { kind })
@@ -494,9 +499,8 @@ mod tests {
         assert_eq!((report.imported, report.duplicates), (2, 0));
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].0, 3);
-        assert_eq!(report.lists_created, 2);
-        assert_eq!(report.lists_skipped.len(), 1);
-        assert_eq!(report.lists_skipped[0].0, "Today");
+        assert_eq!(report.lists_created, 3);
+        assert!(report.lists_skipped.is_empty());
         assert_eq!(report.excludes, 1);
 
         let recent = store.recent(10).unwrap();
@@ -526,12 +530,20 @@ mod tests {
         let images = store.list_by_name("Images").unwrap().unwrap();
         assert_eq!(images.rule, Some(Rule::Kind { kind: Kind::Image }));
         assert_eq!(store.excludes().unwrap(), ["com.agilebits.onepassword7"]);
+        let today = store.list_by_name("Today").unwrap().unwrap();
+        let copied_today = |now| store.list_items(&today, 10, now).unwrap();
+        assert!(
+            copied_today(text.created_at + 1)
+                .iter()
+                .any(|i| i.id == text.id)
+        );
+        assert!(copied_today(text.created_at + 2 * 86_400_000).is_empty());
 
         let again = import(&mut store, &path).unwrap();
         assert_eq!((again.imported, again.duplicates), (0, 2));
         assert_eq!(again.lists_created, 0);
         assert_eq!(store.recent(10).unwrap(), recent);
-        assert_eq!(store.lists().unwrap().len(), 2);
+        assert_eq!(store.lists().unwrap().len(), 3);
         assert_eq!(store.list_items(&pinned, 10, 0).unwrap().len(), 1);
     }
 }

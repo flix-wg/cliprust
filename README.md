@@ -43,7 +43,8 @@ The database lives in `~/Library/Application Support/cliprust/cliprust.db`;
 set `CLIPRUST_DB` or `--db` to use another file.
 
 Smart-list rules combine `all`, `any` and `not` with `kind`, `app`,
-`contains`, `copied_within` (seconds), `larger_than` (bytes) and `secret`.
+`contains`, `copied_within` (seconds), `created_today`, `larger_than` (bytes)
+and `secret`.
 
 ## Development
 

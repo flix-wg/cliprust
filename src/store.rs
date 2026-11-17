@@ -93,7 +93,7 @@ impl Store {
             .optional()?;
         let outcome = if let Some(id) = existing {
             tx.execute(
-                "UPDATE paste_items SET last_used_at = ?1, app_id = coalesce(?2, app_id), \
+                "UPDATE paste_items SET last_used_at = max(last_used_at, ?1), app_id = coalesce(?2, app_id), \
                  source_url = coalesce(?3, source_url), source_title = coalesce(?4, source_title) \
                  WHERE id = ?5",
                 params![now, app_id, cap.source_url, cap.source_title, id],

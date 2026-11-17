@@ -72,7 +72,7 @@ enum Cmd {
     Delete {
         id: i64,
     },
-    /// Delete the whole history
+    /// Delete the history except items in manual lists
     Clear,
     /// Delete unlisted items beyond the newest KEEP
     Prune {

@@ -14,14 +14,32 @@ pub(crate) const CONTAINS_SQL: &str = "(instr(lower(coalesce(p.text, '')), lower
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Rule {
-    All { rules: Vec<Rule> },
-    Any { rules: Vec<Rule> },
-    Not { rule: Box<Rule> },
-    Kind { kind: Kind },
-    App { bundle_id: String },
-    Contains { text: String },
-    CopiedWithin { seconds: i64 },
-    LargerThan { bytes: i64 },
+    All {
+        rules: Vec<Rule>,
+    },
+    Any {
+        rules: Vec<Rule>,
+    },
+    Not {
+        rule: Box<Rule>,
+    },
+    Kind {
+        kind: Kind,
+    },
+    App {
+        bundle_id: String,
+    },
+    Contains {
+        text: String,
+    },
+    CopiedWithin {
+        seconds: i64,
+    },
+    LargerThan {
+        bytes: i64,
+    },
+    /// First copied since local midnight.
+    CreatedToday,
     Secret,
 }
 
@@ -51,6 +69,10 @@ impl Rule {
             Rule::LargerThan { bytes } => {
                 params.push((*bytes).into());
                 "p.byte_size > ?".into()
+            }
+            Rule::CreatedToday => {
+                params.push(now.into());
+                "p.created_at >= unixepoch(? / 1000, 'unixepoch', 'localtime', 'start of day', 'utc') * 1000".into()
             }
             Rule::Secret => "p.secret_provider IS NOT NULL".into(),
         }
