@@ -11,10 +11,10 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::model::{ItemSummary, Kind, Settings};
+use crate::model::{ItemSummary, Kind, SecretKind, Settings};
 use crate::monitor::{self, Event};
 use crate::rules::{Rule, SortType};
-use crate::store::{Ingest, PasteList, Store};
+use crate::store::{Ingest, PasteList, SecretFilter, Store};
 use crate::{capture, now_ms, platform};
 
 type R<T> = std::result::Result<T, String>;
@@ -235,7 +235,8 @@ fn event_json(ev: &Event) -> Value {
             "id": outcome.id(),
             "new": matches!(outcome, Ingest::Inserted(_)),
             "kind": kind.as_str(),
-            "secret": secret,
+            "secret": secret.is_some(),
+            "secret_kind": secret.map(SecretKind::as_str),
         }),
         Event::Skipped(reason) => json!({ "type": "skipped", "reason": reason.to_string() }),
         Event::Failed(e) => json!({ "type": "failed", "error": e.to_string() }),
@@ -250,7 +251,10 @@ fn summary(s: &ItemSummary) -> Value {
         "preview": s.preview,
         "app": s.app_bundle_id,
         "source_url": s.source_url,
+        "source_domain": s.source_domain,
+        "secret_kind": s.secret_kind.map(SecretKind::as_str),
         "secret_provider": s.secret_provider,
+        "note": s.note,
         "created_at": s.created_at,
         "last_used_at": s.last_used_at,
         "byte_size": s.byte_size,
@@ -315,7 +319,7 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
             let text = item
                 .text()
                 .map(|t| truncate(t, DETAIL_TEXT_LIMIT).to_owned());
-            v["text"] = json!(if item.summary.secret_provider.is_some() {
+            v["text"] = json!(if is_masked(&item.summary) {
                 item.summary.preview.clone()
             } else {
                 text
@@ -343,6 +347,40 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
             let Id { id } = params(p)?;
             let item = store.get(id).map_err(e)?.ok_or("no such item")?;
             json!(item.text())
+        }
+        "secrets" => {
+            #[derive(Deserialize)]
+            struct P {
+                #[serde(flatten)]
+                filter: SecretFilter,
+                #[serde(default = "default_limit")]
+                limit: usize,
+            }
+            let P { filter, limit } = params(p)?;
+            Value::from_iter(
+                store
+                    .secrets(&filter, limit)
+                    .map_err(e)?
+                    .iter()
+                    .map(summary),
+            )
+        }
+        "secret_facets" => {
+            #[derive(Deserialize)]
+            struct P {
+                kind: Option<SecretKind>,
+            }
+            let P { kind } = params(p)?;
+            json!(store.secret_facets(kind).map_err(e)?)
+        }
+        "set_note" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: i64,
+                note: Option<String>,
+            }
+            let P { id, note } = params(p)?;
+            json!(store.set_note(id, note.as_deref()).map_err(e)?)
         }
         "delete" => {
             let Id { id } = params(p)?;
@@ -493,6 +531,12 @@ fn items(store: &Store, q: ItemsQuery, now: i64) -> R<Vec<ItemSummary>> {
     Ok(found)
 }
 
+/// Keys stay masked; IDs are shown in full.
+fn is_masked(s: &ItemSummary) -> bool {
+    s.secret_kind == Some(SecretKind::Key)
+        || (s.secret_provider.is_some() && s.secret_kind != Some(SecretKind::Id))
+}
+
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -502,4 +546,48 @@ fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Capture, Secret};
+
+    #[test]
+    fn keys_filter_by_kind_and_notes_round_trip_through_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let h = CrHandle {
+            store: Mutex::new(Store::open(&path).unwrap()),
+            path,
+            watching: AtomicBool::new(false),
+        };
+        let mut key = Capture::from_text("sk-live-secret-value".into());
+        key.secret = Some(Secret {
+            kind: SecretKind::Key,
+            provider: "Test key".into(),
+            name: "TEST_KEY".into(),
+            masked: "sk-liv…alue".into(),
+        });
+        let id = h.store().ingest(&key, 1).unwrap().id();
+        let req =
+            |m: &str, p: Value| call(&h, &json!({"method": m, "params": p}).to_string()).unwrap();
+
+        assert_eq!(
+            req("set_note", json!({"id": id, "note": "billing"})),
+            json!(true)
+        );
+        let keys = req("secrets", json!({"kind": "key", "provider": "test KEY"}));
+        assert_eq!(keys[0]["note"], "billing");
+        assert_eq!(keys[0]["secret_kind"], "key");
+        assert_eq!(req("secrets", json!({"kind": "id"})), json!([]));
+        assert_eq!(
+            req("secret_facets", Value::Null)["providers"][0]["count"],
+            1
+        );
+        assert_ne!(
+            req("item", json!({"id": id}))["text"],
+            "sk-live-secret-value"
+        );
+    }
 }
