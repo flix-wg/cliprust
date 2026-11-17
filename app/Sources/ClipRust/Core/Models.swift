@@ -6,6 +6,7 @@ enum ItemKind: String, Codable, CaseIterable, Sendable {
 
 struct Item: Codable, Identifiable, Hashable, Sendable {
     static let keysList = "Keys"
+    static let idsList = "IDs"
 
     let id: Int64
     let kind: ItemKind
@@ -20,7 +21,6 @@ struct Item: Codable, Identifiable, Hashable, Sendable {
     // Only in `item` responses.
     var text: String?
     var formats: [String]?
-    // Arrive with the core update; nil until then.
     var note: String?
     var secretKind: String?
     var sourceDomain: String?

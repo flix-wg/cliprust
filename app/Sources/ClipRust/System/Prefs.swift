@@ -1,8 +1,7 @@
 import AppKit
 
 enum Features {
-    /// Notes need `set_note` and the `note` field from the core.
-    static let notes = false
+    static let notes = true
 }
 
 enum PanelPosition: String, CaseIterable, Identifiable {

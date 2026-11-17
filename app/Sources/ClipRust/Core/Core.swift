@@ -105,6 +105,8 @@ extension Core {
         return try await call("items", p)
     }
 
+    /// Keys and IDs together; the Keys window facets them itself.
+    func secrets(limit: Int) async throws -> [Item] { try await call("secrets", ["limit": limit]) }
     func item(_ id: Int64) async throws -> Item { try await call("item", ["id": id]) }
     func pastePrep(_ id: Int64, plain: Bool) async throws { try await run("paste_prep", ["id": id, "plain": plain]) }
     func revealKey(_ id: Int64) async throws -> String? { try await call("reveal_key", ["id": id]) }

@@ -139,6 +139,7 @@ struct KeysView: View {
 struct KeyInspector: View {
     @Bindable var model: KeysModel
     @State private var name = ""
+    @State private var note = ""
 
     var body: some View {
         if let item = model.selectedItem {
@@ -161,14 +162,18 @@ struct KeyInspector: View {
                     if Features.notes {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Note").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                            TextEditor(text: .constant(item.note ?? ""))
+                            TextField("Add a note…", text: $note, axis: .vertical)
+                                .textFieldStyle(.plain)
                                 .font(.system(size: 12))
-                                .frame(minHeight: 70)
+                                .lineLimit(3...8)
+                                .padding(8)
+                                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .onSubmit { Task { await model.setNote(item, note) } }
                         }
                     }
                     Divider()
                     HStack {
-                        Button("Remove from Keys") { Task { await model.removeFromKeys([item.id]) } }
+                        Button(item.isID ? "Remove from IDs" : "Remove from Keys") { Task { await model.removeFromKeys([item.id]) } }
                         Spacer()
                         Button("Delete", role: .destructive) { Task { await model.delete([item.id]) } }
                     }
@@ -176,7 +181,14 @@ struct KeyInspector: View {
                 }
                 .padding(16)
             }
-            .onChange(of: item.id, initial: true) { name = item.title ?? "" }
+            .onChange(of: item.id, initial: true) { old, _ in
+                if let previous = model.items.first(where: { $0.id == old }), previous.id != item.id {
+                    let text = note
+                    Task { await model.setNote(previous, text) }
+                }
+                name = item.title ?? ""
+                note = item.note ?? ""
+            }
         } else {
             Text(model.selection.count > 1 ? "\(model.selection.count) keys selected" : "No Selection")
                 .font(.system(size: 13))

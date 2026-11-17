@@ -181,7 +181,7 @@ void      cr_close(CrHandle *h);
 
 | Method | Params / returns |
 | --- | --- |
-| `items` | `{query?, kind?, list?, keys?, limit, offset}` → `[ItemSummary]` |
+| `items` | `{query?, kind?, list?, limit}` → `[ItemSummary]` |
 | `item` | `{id}` → summary plus `formats: [String]`, full `text?`, `note?` |
 | `paste_prep` | `{id, plain}` writes every representation to the pasteboard (or plain text only) and touches the item |
 | `delete` | `{id}` |
@@ -192,8 +192,8 @@ void      cr_close(CrHandle *h);
 | `delete_list` | `{name}` |
 | `add_to_list` | `{name, id}` |
 | `remove_from_list` | `{name, id}` |
-| `keys` | `{provider?, domain?, kind?}` |
-| `key_facets` | → `{providers: [{name, count}], domains: [{name, count}]}` |
+| `secrets` | `{kind?, provider?, domain?, limit}` → `[ItemSummary]` (keys and IDs) |
+| `secret_facets` | `{kind?}` → `{providers: [{name, count}], domains: [{name, count}]}` |
 | `reveal_key` | `{id}` → full value (Swift gates it behind LocalAuthentication) |
 | `settings` / `save_settings` | `Settings` |
 | `excludes` / `add_exclude` / `remove_exclude` | the ignored apps |

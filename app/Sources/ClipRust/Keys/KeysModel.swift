@@ -64,7 +64,7 @@ final class KeysModel {
     func reload() async {
         guard let core = app.core else { return }
         await app.refreshLists()
-        items = app.hasKeysList ? (try? await core.items(list: Item.keysList, limit: 5000)) ?? [] : []
+        items = (try? await core.secrets(limit: 5000)) ?? []
         selection.formIntersection(Set(items.map(\.id)))
     }
 
@@ -107,13 +107,22 @@ final class KeysModel {
         await reload()
     }
 
+    func setNote(_ item: Item, _ note: String) async {
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard note != (item.note ?? "") else { return }
+        try? await app.core?.setNote(item.id, note.isEmpty ? nil : note)
+        await reload()
+    }
+
     func delete(_ ids: Set<Int64>) async {
         for id in ids { try? await app.core?.delete(id) }
         await reload()
     }
 
     func removeFromKeys(_ ids: Set<Int64>) async {
-        for id in ids { try? await app.core?.removeFromList(Item.keysList, id) }
+        for item in items where ids.contains(item.id) {
+            try? await app.core?.removeFromList(item.isID ? Item.idsList : Item.keysList, item.id)
+        }
         await reload()
     }
 }
