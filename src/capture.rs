@@ -11,6 +11,7 @@ use crate::{Error, Result};
 mod types {
     pub const TEXT_TYPE: &str = "public.utf8-plain-text";
     pub const FILE_TYPE: &str = "public.file-url";
+    pub const HTML_TYPE: &str = "public.html";
     pub const IMAGE_TYPES: &[&str] = &["public.png", "public.tiff", "public.jpeg"];
     pub const SOURCE_URL_TYPES: &[&str] = &["org.chromium.source-url"];
 }
@@ -19,6 +20,7 @@ mod types {
 mod types {
     pub const TEXT_TYPE: &str = "text/plain;charset=utf-8";
     pub const FILE_TYPE: &str = "text/uri-list";
+    pub const HTML_TYPE: &str = "text/html";
     pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg"];
     pub const SOURCE_URL_TYPES: &[&str] = &["chromium/x-source-url"];
 }
@@ -58,7 +60,8 @@ impl fmt::Display for Skipped {
     }
 }
 
-/// Reads the current clipboard. Files win over text, and text over images,
+/// Reads the current clipboard. Files win over text, text over HTML-only
+/// content, and that over images,
 /// because apps such as spreadsheets attach a rendered image to copied text.
 pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Capture, Skipped> {
     let formats = ctx
@@ -112,6 +115,22 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
             cap.reps.push(Rep::new(format::HTML, html.into_bytes()));
         }
         cap
+    } else if let Some(html) = ctx
+        .has(ContentFormat::Html)
+        .then(|| ctx.get_html().ok())
+        .flatten()
+        .filter(|h| !h.trim().is_empty())
+    {
+        Capture {
+            kind: Kind::Text,
+            reps: vec![Rep::new(format::HTML, html.clone().into_bytes())],
+            text: Some(html),
+            base_uniform_type: types::HTML_TYPE.to_owned(),
+            app: None,
+            source_url: None,
+            source_title: None,
+            secret: None,
+        }
     } else if let Some((ty, data)) = IMAGE_TYPES
         .iter()
         .filter(|ty| has(ty))
