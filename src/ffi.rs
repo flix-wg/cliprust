@@ -11,10 +11,10 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::model::{ItemSummary, Kind, SecretKind, Settings};
+use crate::model::{ItemSummary, Kind, SecretKind, Settings, TEXT_FORMATS};
 use crate::monitor::{self, Event};
 use crate::rules::{Rule, SortType};
-use crate::store::{Ingest, PasteList, SecretFilter, Store};
+use crate::store::{Find, Ingest, PasteList, SecretFilter, Store};
 use crate::{capture, now_ms, platform};
 
 type R<T> = std::result::Result<T, String>;
@@ -135,8 +135,9 @@ pub unsafe extern "C" fn cr_call(h: *const CrHandle, request: *const c_char) -> 
     )
 }
 
-/// Copies one stored representation (`format` as in `item.formats`) into a
-/// new buffer. Returns 0 on success, 1 if absent, 2 on error.
+/// Copies one stored representation (`format` as in `item.formats`, or
+/// `"image"` for the first image format) into a new buffer. Returns 0 on
+/// success, 1 if absent, 2 on error.
 ///
 /// # Safety
 /// `h` is a live handle; `format` a valid C string; `out`/`len` writable.
@@ -155,11 +156,7 @@ pub unsafe extern "C" fn cr_item_data(
         return 2;
     }
     let found = catch_unwind(AssertUnwindSafe(|| {
-        let item = h.store().get(id).ok()??;
-        item.reps
-            .into_iter()
-            .find(|r| r.format == format)
-            .map(|r| r.data)
+        h.store().rep(id, format).ok().flatten()
     }));
     match found {
         Ok(Some(data)) => {
@@ -292,6 +289,7 @@ struct ItemsQuery {
     query: Option<String>,
     kind: Option<Kind>,
     list: Option<String>,
+    app: Option<String>,
     #[serde(default = "default_limit")]
     limit: usize,
 }
@@ -300,9 +298,6 @@ fn default_limit() -> usize {
     200
 }
 
-/// Items in a list or of a kind are matched against the query in memory over
-/// this many candidates.
-const FILTER_SCAN: usize = 5000;
 const DETAIL_TEXT_LIMIT: usize = 256 * 1024;
 
 fn params<T: DeserializeOwned>(v: Value) -> R<T> {
@@ -319,17 +314,20 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
         "items" => Value::from_iter(items(&store, params(p)?, now)?.iter().map(summary)),
         "item" => {
             let Id { id } = params(p)?;
-            let item = store.get(id).map_err(e)?.ok_or("no such item")?;
-            let mut v = summary(&item.summary);
-            let text = item
-                .text()
-                .map(|t| truncate(t, DETAIL_TEXT_LIMIT).to_owned());
-            v["text"] = json!(if is_masked(&item.summary) {
-                item.summary.preview.clone()
-            } else {
-                text
-            });
-            v["formats"] = json!(item.reps.iter().map(|r| &r.format).collect::<Vec<_>>());
+            let s = store.summary(id).map_err(e)?.ok_or("no such item")?;
+            let formats = store.formats(id).map_err(e)?;
+            let text = match formats.iter().find(|f| TEXT_FORMATS.contains(&f.as_str())) {
+                _ if is_masked(&s) => s.preview.clone(),
+                Some(f) => store
+                    .rep(id, f)
+                    .map_err(e)?
+                    .and_then(|d| String::from_utf8(d).ok())
+                    .map(|t| truncate(&t, DETAIL_TEXT_LIMIT).to_owned()),
+                None => None,
+            };
+            let mut v = summary(&s);
+            v["text"] = json!(text);
+            v["formats"] = json!(formats);
             v
         }
         "paste_prep" => {
@@ -405,7 +403,23 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
             let title = title.filter(|t| !t.trim().is_empty());
             json!(store.set_title(id, title.as_deref()).map_err(e)?)
         }
+        "apps" => {
+            #[derive(Deserialize)]
+            struct P {
+                query: Option<String>,
+            }
+            let P { query } = params(p)?;
+            json!(store.apps(query.as_deref()).map_err(e)?)
+        }
         "lists" => Value::from_iter(store.lists().map_err(e)?.iter().map(list_json)),
+        "list_ids" => {
+            #[derive(Deserialize)]
+            struct P {
+                name: String,
+            }
+            let P { name } = params(p)?;
+            json!(store.list_ids(&name).map_err(e)?)
+        }
         "create_list" => {
             #[derive(Deserialize)]
             struct P {
@@ -501,53 +515,22 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
 
 fn items(store: &Store, q: ItemsQuery, now: i64) -> R<Vec<ItemSummary>> {
     let e = |e: crate::Error| e.to_string();
-    let query = q.query.filter(|t| !t.trim().is_empty());
-    let filtered = q.list.is_some() || q.kind.is_some();
-    let mut found = match (&q.list, &query, q.kind) {
-        (None, Some(text), _) => store.search(text, if filtered { FILTER_SCAN } else { q.limit }),
-        (None, None, Some(kind)) => {
-            let list = PasteList {
-                id: 0,
-                name: String::new(),
-                rule: Some(Rule::Kind { kind }),
-                sort: SortType::Recent,
-                sort_weight: 0.0,
-            };
-            store.list_items(&list, q.limit, now)
-        }
-        (None, None, None) => store.recent(q.limit),
-        (Some(name), _, _) => {
-            let list = store
+    let list = match &q.list {
+        Some(name) => Some(
+            store
                 .list_by_name(name)
                 .map_err(e)?
-                .ok_or_else(|| format!("no list named {name:?}"))?;
-            let scan = if query.is_some() || q.kind.is_some() {
-                FILTER_SCAN
-            } else {
-                q.limit
-            };
-            store.list_items(&list, scan, now)
-        }
-    }
-    .map_err(e)?;
-    if let Some(kind) = q.kind {
-        found.retain(|s| s.kind == kind);
-    }
-    if let (Some(_), Some(text)) = (&q.list, &query) {
-        let terms: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
-        found.retain(|s| {
-            let hay = format!(
-                "{} {} {}",
-                s.title.as_deref().unwrap_or_default(),
-                s.preview.as_deref().unwrap_or_default(),
-                s.note.as_deref().unwrap_or_default()
-            )
-            .to_lowercase();
-            terms.iter().all(|t| hay.contains(t.as_str()))
-        });
-    }
-    found.truncate(q.limit);
-    Ok(found)
+                .ok_or_else(|| format!("no list named {name:?}"))?,
+        ),
+        None => None,
+    };
+    let find = Find {
+        text: q.query.as_deref(),
+        kind: q.kind,
+        app: q.app.as_deref(),
+        list: list.as_ref(),
+    };
+    store.find(&find, q.limit, now).map_err(e)
 }
 
 /// Keys stay masked; IDs are shown in full.
@@ -588,6 +571,11 @@ mod tests {
             name: "TEST_KEY".into(),
             masked: "sk-liv…alue".into(),
         });
+        key.app = Some(crate::AppInfo {
+            bundle_id: "com.openai.codex".into(),
+            name: Some("ChatGPT".into()),
+            path: None,
+        });
         let id = h.store().ingest(&key, 1).unwrap().id();
         let req =
             |m: &str, p: Value| call(&h, &json!({"method": m, "params": p}).to_string()).unwrap();
@@ -608,6 +596,20 @@ mod tests {
             req("item", json!({"id": id}))["text"],
             "sk-live-secret-value"
         );
+        assert_eq!(
+            req("apps", json!({"query": "codex"})),
+            json!([{"bundle_id": "com.openai.codex", "name": "ChatGPT", "count": 1}])
+        );
+        let from = |app: &str| {
+            req(
+                "items",
+                json!({"app": app, "query": "TEST", "kind": "text"}),
+            )
+        };
+        assert_eq!(from("com.openai.codex")[0]["id"], id);
+        assert_eq!(from("com.apple.mail"), json!([]));
+        req("add_to_list", json!({"name": "Pinned", "id": id}));
+        assert_eq!(req("list_ids", json!({"name": "Pinned"})), json!([id]));
         req("create_list", json!({"name": "Work"}));
         assert_eq!(
             req("rename_list", json!({"name": "Work", "new_name": "Job"})),

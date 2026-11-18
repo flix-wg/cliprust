@@ -61,6 +61,25 @@ pub struct SecretFilter {
     pub domain: Option<String>,
 }
 
+/// Narrows [`Store::find`]; `None` fields match everything.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Find<'a> {
+    /// Whitespace-separated terms, all of which must occur as substrings.
+    pub text: Option<&'a str>,
+    pub kind: Option<Kind>,
+    /// Bundle id of the app the item was copied from.
+    pub app: Option<&'a str>,
+    pub list: Option<&'a PasteList>,
+}
+
+/// An app with the number of stored items copied from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppCount {
+    pub bundle_id: String,
+    pub name: Option<String>,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Facet {
     pub name: String,
@@ -215,20 +234,39 @@ impl Store {
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<ItemSummary>> {
-        let sql = format!("{SUMMARY_SQL} {} LIMIT ?", SortType::Recent.order_sql());
-        self.summaries(&sql, vec![Value::from(limit as i64)])
+        self.find(&Find::default(), limit, 0)
     }
 
-    /// Whitespace-separated terms, all of which must occur as substrings.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<ItemSummary>> {
-        let (long, short): (Vec<&str>, Vec<&str>) = query
-            .split_whitespace()
-            .partition(|t| t.chars().count() >= 3);
+        let find = Find {
+            text: Some(query),
+            ..Find::default()
+        };
+        self.find(&find, limit, 0)
+    }
+
+    /// Items matching every given filter, in the list's order or most recent first.
+    pub fn find(&self, f: &Find<'_>, limit: usize, now: i64) -> Result<Vec<ItemSummary>> {
         let mut clauses = Vec::new();
         let mut params = Vec::new();
+        if let Some(list) = f.list {
+            clauses.push(match &list.rule {
+                Some(rule) => rule.to_sql(now, &mut params),
+                None => {
+                    params.push(Value::from(list.id));
+                    "p.id IN (SELECT item_id FROM paste_list_items WHERE list_id = ?)".to_owned()
+                }
+            });
+        }
+        let (long, short): (Vec<&str>, Vec<&str>) = f
+            .text
+            .unwrap_or_default()
+            .split_whitespace()
+            .partition(|t| t.chars().count() >= 3);
         if !long.is_empty() {
-            clauses
-                .push("p.id IN (SELECT rowid FROM paste_items_fts WHERE paste_items_fts MATCH ?)");
+            clauses.push(
+                "p.id IN (SELECT rowid FROM paste_items_fts WHERE paste_items_fts MATCH ?)".into(),
+            );
             let phrases: Vec<String> = long
                 .iter()
                 .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
@@ -237,24 +275,91 @@ impl Store {
         }
         // The trigram index cannot answer terms shorter than three characters.
         for term in short {
-            clauses.push(CONTAINS_SQL);
+            clauses.push(CONTAINS_SQL.into());
             params.extend(std::iter::repeat_n(Value::from(term.to_owned()), 3));
         }
-        if clauses.is_empty() {
-            return self.recent(limit);
+        if let Some(kind) = f.kind {
+            clauses.push("p.kind = ?".into());
+            params.push(Value::from(kind.as_str().to_owned()));
         }
+        if let Some(app) = f.app {
+            clauses.push("p.app_id = (SELECT id FROM applications WHERE bundle_id = ?)".into());
+            params.push(Value::from(app.to_owned()));
+        }
+        let filter = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE ({})", clauses.join(") AND ("))
+        };
         params.push(Value::from(limit as i64));
-        let sql = format!(
-            "{SUMMARY_SQL} WHERE {} {} LIMIT ?",
-            clauses.join(" AND "),
-            SortType::Recent.order_sql()
-        );
+        let sort = f.list.map_or(SortType::Recent, |l| l.sort);
+        let sql = format!("{SUMMARY_SQL} {filter} {} LIMIT ?", sort.order_sql());
         self.summaries(&sql, params)
     }
 
-    pub fn get(&self, id: i64) -> Result<Option<Item>> {
+    /// Apps that stored items were copied from, most copied first. A query
+    /// keeps apps whose name, a word of it, or a bundle-id component starts
+    /// with it, best match first.
+    pub fn apps(&self, query: Option<&str>) -> Result<Vec<AppCount>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT a.bundle_id, a.name, count(*) FROM applications a \
+             JOIN paste_items p ON p.app_id = a.id \
+             GROUP BY a.id ORDER BY a.copy_count DESC, 3 DESC, a.bundle_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AppCount {
+                bundle_id: r.get(0)?,
+                name: r.get(1)?,
+                count: r.get(2)?,
+            })
+        })?;
+        let apps: Vec<AppCount> = rows.collect::<rusqlite::Result<_>>()?;
+        let Some(q) = query
+            .map(|q| q.trim().to_lowercase())
+            .filter(|q| !q.is_empty())
+        else {
+            return Ok(apps);
+        };
+        let mut ranked: Vec<(u8, AppCount)> = apps
+            .into_iter()
+            .filter_map(|a| Some((app_rank(&q, &a)?, a)))
+            .collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        Ok(ranked.into_iter().map(|(_, a)| a).collect())
+    }
+
+    pub fn summary(&self, id: i64) -> Result<Option<ItemSummary>> {
         let sql = format!("{SUMMARY_SQL} WHERE p.id = ?");
-        let Some(summary) = self.summaries(&sql, vec![Value::from(id)])?.pop() else {
+        Ok(self.summaries(&sql, vec![Value::from(id)])?.pop())
+    }
+
+    /// The stored formats of an item, without reading their payloads.
+    pub fn formats(&self, id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT format FROM paste_item_data WHERE item_id = ?1 ORDER BY position",
+        )?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// One representation, decompressed. `"image"` picks the first image format.
+    pub fn rep(&self, id: i64, format: &str) -> Result<Option<Vec<u8>>> {
+        let row: Option<(Vec<u8>, i64)> = self
+            .conn
+            .prepare_cached(
+                "SELECT payload, raw_size FROM paste_item_data WHERE item_id = ?1 AND (format = ?2 \
+                 OR (?2 = 'image' AND format IN ('public.png', 'public.tiff', 'public.jpeg', 'public.heic'))) \
+                 ORDER BY position LIMIT 1",
+            )?
+            .query_row(params![id, format], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        Ok(row
+            .map(|(payload, raw_size)| zstd::bulk::decompress(&payload, raw_size as usize))
+            .transpose()?)
+    }
+
+    pub fn get(&self, id: i64) -> Result<Option<Item>> {
+        let Some(summary) = self.summary(id)? else {
             return Ok(None);
         };
         let mut stmt = self
@@ -475,20 +580,20 @@ impl Store {
     }
 
     pub fn list_items(&self, list: &PasteList, limit: usize, now: i64) -> Result<Vec<ItemSummary>> {
-        let mut params = Vec::new();
-        let filter = match &list.rule {
-            Some(rule) => rule.to_sql(now, &mut params),
-            None => {
-                params.push(Value::from(list.id));
-                "p.id IN (SELECT item_id FROM paste_list_items WHERE list_id = ?)".to_owned()
-            }
+        let find = Find {
+            list: Some(list),
+            ..Find::default()
         };
-        params.push(Value::from(limit as i64));
-        let sql = format!(
-            "{SUMMARY_SQL} WHERE {filter} {} LIMIT ?",
-            list.sort.order_sql()
-        );
-        self.summaries(&sql, params)
+        self.find(&find, limit, now)
+    }
+
+    /// Ids of the items in a manual list.
+    pub fn list_ids(&self, name: &str) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT i.item_id FROM paste_list_items i JOIN paste_lists l ON l.id = i.list_id WHERE l.name = ?1",
+        )?;
+        let rows = stmt.query_map([name], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn add_exclude(&mut self, bundle_id: &str) -> Result<()> {
@@ -612,6 +717,26 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<ItemSummary> {
         last_used_at: r.get(11)?,
         byte_size: r.get(12)?,
     })
+}
+
+fn app_rank(q: &str, app: &AppCount) -> Option<u8> {
+    let name = app.name.as_deref().unwrap_or_default().to_lowercase();
+    let bundle = app.bundle_id.to_lowercase();
+    let parts: Vec<&str> = bundle.split('.').collect();
+    if name.starts_with(q) {
+        Some(0)
+    } else if name
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.starts_with(q))
+    {
+        Some(1)
+    } else if parts.last().is_some_and(|p| p.starts_with(q)) {
+        Some(2)
+    } else if q.len() >= 3 && parts.iter().skip(1).any(|p| p.starts_with(q)) {
+        Some(3)
+    } else {
+        None
+    }
 }
 
 fn secret_filter_sql(filter: &SecretFilter, params: &mut Vec<Value>) -> String {
@@ -782,8 +907,12 @@ mod tests {
         let mut s = store();
         let mut cap = Capture::from_text("x".repeat(100_000));
         cap.reps.push(Rep::new(format::HTML, b"<b>x</b>".to_vec()));
+        cap.reps.push(Rep::new("public.png", b"\x89PNG".to_vec()));
         let id = s.ingest(&cap, 1).unwrap().id();
         assert_eq!(s.get(id).unwrap().unwrap().reps, cap.reps);
+        assert_eq!(s.formats(id).unwrap(), ["text", "html", "public.png"]);
+        assert_eq!(s.rep(id, "image").unwrap().unwrap(), b"\x89PNG");
+        assert_eq!(s.rep(id, "rtf").unwrap(), None);
         let stats = s.stats().unwrap();
         assert!(stats.stored_bytes * 10 < stats.raw_bytes);
 
@@ -852,6 +981,24 @@ mod tests {
             ids(s.list_items(&links, 10, 5_000).unwrap()),
             [home, no_app]
         );
+
+        let home_links = Find {
+            text: Some("exa"),
+            kind: Some(Kind::Url),
+            app: Some("com.home"),
+            list: Some(&links),
+        };
+        assert_eq!(ids(s.find(&home_links, 10, 5_000).unwrap()), [home]);
+        let names = |q| -> Vec<String> {
+            s.apps(q)
+                .unwrap()
+                .into_iter()
+                .map(|a| a.bundle_id)
+                .collect()
+        };
+        assert_eq!(names(None), ["com.home", "com.work"]);
+        assert_eq!(names(Some("WOR")), ["com.work"]);
+        assert!(names(Some("com")).is_empty());
 
         let recent = PasteList {
             rule: Some(Rule::CopiedWithin { seconds: 2 }),

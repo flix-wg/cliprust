@@ -18,7 +18,8 @@ pub use model::{
 };
 pub use rules::{Rule, SortType};
 pub use store::{
-    Facet, Facets, IDS_LIST, Ingest, KEYS_LIST, PasteList, SecretFilter, Stats, Store,
+    AppCount, Facet, Facets, Find, IDS_LIST, Ingest, KEYS_LIST, PasteList, SecretFilter, Stats,
+    Store,
 };
 
 #[derive(Debug, thiserror::Error)]

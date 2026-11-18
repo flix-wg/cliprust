@@ -154,9 +154,12 @@ impl Capture {
     }
 }
 
+/// Formats that hold an item's text, in order of preference within its reps.
+pub(crate) const TEXT_FORMATS: [&str; 3] = [format::TEXT, format::FILES, format::HTML];
+
 pub(crate) fn text_of(reps: &[Rep]) -> Option<&str> {
     reps.iter()
-        .find(|r| [format::TEXT, format::FILES, format::HTML].contains(&r.format.as_str()))
+        .find(|r| TEXT_FORMATS.contains(&r.format.as_str()))
         .and_then(|r| std::str::from_utf8(&r.data).ok())
 }
 

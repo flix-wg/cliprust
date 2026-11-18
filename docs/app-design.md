@@ -170,7 +170,7 @@ typedef void (*cr_event_cb)(const char *event_json, void *ctx);
 
 CrHandle *cr_open(const char *db_path /* NULL = default */, char **err_out);
 char     *cr_call(CrHandle *h, const char *request_json);   // always returns JSON, caller frees
-int       cr_item_data(CrHandle *h, int64_t id, const char *format, uint8_t **out, size_t *len); // 0 = ok
+int       cr_item_data(CrHandle *h, int64_t id, const char *format, uint8_t **out, size_t *len); // 0 = ok; "image" = first image format
 void      cr_watch(CrHandle *h, cr_event_cb cb, void *ctx); // starts the watcher thread once
 void      cr_free_string(char *s);
 void      cr_free_bytes(uint8_t *p, size_t len);
@@ -186,13 +186,15 @@ void      cr_close(CrHandle *h);
 
 | Method | Params / returns |
 | --- | --- |
-| `items` | `{query?, kind?, list?, limit}` → `[ItemSummary]` |
-| `item` | `{id}` → summary plus `formats: [String]`, full `text?`, `note?` |
+| `items` | `{query?, kind?, list?, app?, limit}` → `[ItemSummary]`; every given filter applies (`app` is a bundle id) |
+| `item` | `{id}` → summary plus `formats: [String]`, full `text?`, `note?`; only the text format is decompressed |
+| `apps` | `{query?}` → `[{bundle_id, name?, count}]`, apps of stored items, most copied first; a query matches a prefix of the name, a word of it or a bundle-id component |
 | `paste_prep` | `{id, plain}` writes every representation to the pasteboard (or plain text only) and touches the item |
 | `delete` | `{id}` |
 | `set_title` | `{id, title?}` |
 | `set_note` | `{id, note?}` |
 | `lists` | `[{name, rule?, sort, manual}]` |
+| `list_ids` | `{name}` → ids of the items in a manual list |
 | `create_list` | `{name, rule?}` |
 | `delete_list` | `{name}` |
 | `add_to_list` | `{name, id}` |
