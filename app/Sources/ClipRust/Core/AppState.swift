@@ -9,6 +9,7 @@ final class AppState {
     var recent: [Item] = []
     var apps: [SourceApp] = []
     var pinnedIDs: Set<Int64> = []
+    var hasContacts = false
     var excludes: [String] = []
     var stats: Stats?
     var lastError: String?
@@ -44,6 +45,13 @@ final class AppState {
         await refreshRecent()
         await refreshPins()
         await refreshApps()
+        await refreshContacts()
+    }
+
+    /// The Contacts chip shows once any item holds a phone number, email or address.
+    func refreshContacts() async {
+        guard let core, let found = try? await core.items(contact: "any", limit: 1) else { return }
+        hasContacts = !found.isEmpty
     }
 
     func refreshApps() async {
@@ -85,6 +93,7 @@ final class AppState {
         Task {
             await refreshRecent()
             if secret, !hasKeysList { await refreshLists() }
+            if !secret, !hasContacts { await refreshContacts() }
         }
     }
 
@@ -115,10 +124,11 @@ final class AppState {
         await refreshPins()
     }
 
-    func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil) async -> Bool {
+    func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil,
+                    contact: String? = nil) async -> Bool {
         guard !Self.isReserved(name) else { return false }
         do {
-            try await core?.createList(name, terms: terms, kind: kind, app: app)
+            try await core?.createList(name, terms: terms, kind: kind, app: app, contact: contact)
             await refreshLists()
             return true
         } catch {

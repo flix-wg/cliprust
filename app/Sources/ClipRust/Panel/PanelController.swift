@@ -329,6 +329,13 @@ final class PanelController: NSObject, NSWindowDelegate {
             toggleQuickLook(item)
         case .delete:
             model.delete(item)
+        case .openContact(let type):
+            Task {
+                let text = (try? await app.core?.item(item.id))?.text ?? item.preview ?? ""
+                guard let url = Item.contactURL(type, in: text) else { return NSSound.beep() }
+                close()
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 

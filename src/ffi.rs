@@ -15,7 +15,7 @@ use crate::model::{ItemSummary, Kind, SecretKind, Settings, TEXT_FORMATS};
 use crate::monitor::{self, Event};
 use crate::rules::{Rule, SortType};
 use crate::store::{Find, Ingest, PasteList, SecretFilter, Store};
-use crate::{capture, now_ms, platform};
+use crate::{Contact, capture, now_ms, platform};
 
 type R<T> = std::result::Result<T, String>;
 
@@ -263,6 +263,7 @@ fn summary(s: &ItemSummary) -> Value {
         "secret_kind": s.secret_kind.map(SecretKind::as_str),
         "secret_provider": s.secret_provider,
         "note": s.note,
+        "contact": s.contact,
         "created_at": s.created_at,
         "last_used_at": s.last_used_at,
         "byte_size": s.byte_size,
@@ -296,6 +297,8 @@ struct ItemsQuery {
     kind: Option<Kind>,
     list: Option<String>,
     app: Option<String>,
+    /// `phone`, `email`, `address` or `any`.
+    contact: Option<String>,
     #[serde(default = "default_limit")]
     limit: usize,
 }
@@ -530,11 +533,19 @@ fn items(store: &Store, q: ItemsQuery, now: i64) -> R<Vec<ItemSummary>> {
         ),
         None => None,
     };
+    let contact = match q.contact.as_deref() {
+        None => None,
+        Some("any") => Some(None),
+        Some(c) => Some(Some(
+            Contact::parse(c).ok_or_else(|| format!("unknown contact {c:?}"))?,
+        )),
+    };
     let find = Find {
         text: q.query.as_deref(),
         kind: q.kind,
         app: q.app.as_deref(),
         list: list.as_ref(),
+        contact,
     };
     store.find(&find, q.limit, now).map_err(e)
 }
@@ -613,6 +624,18 @@ mod tests {
             )
         };
         assert_eq!(from("com.openai.codex")[0]["id"], id);
+        let phone = h
+            .store()
+            .ingest(&Capture::from_text("+41 79 123 45 67".into()), 2)
+            .unwrap()
+            .id();
+        let tagged = req("items", json!({"contact": "any"}));
+        assert_eq!(
+            (&tagged[0]["id"], &tagged[0]["contact"]),
+            (&json!(phone), &json!(["phone"]))
+        );
+        assert_eq!(req("items", json!({"contact": "email"})), json!([]));
+        assert_eq!(req("item", json!({"id": id}))["contact"], json!([]));
         assert_eq!(from("com.apple.mail"), json!([]));
         req("add_to_list", json!({"name": "Pinned", "id": id}));
         assert_eq!(req("list_ids", json!({"name": "Pinned"})), json!([id]));

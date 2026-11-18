@@ -109,6 +109,13 @@ INSERT INTO paste_items_fts (paste_items_fts) VALUES ('rebuild');
 PRAGMA user_version = 2;
 ";
 
+/// Tags phone numbers, emails and addresses; `migrate` backfills them.
+const V3: &str = r"
+ALTER TABLE paste_items ADD COLUMN contact TEXT;
+CREATE INDEX paste_items_contact ON paste_items (contact) WHERE contact IS NOT NULL;
+PRAGMA user_version = 3;
+";
+
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     // Only takes effect before the first table exists, i.e. on a new file.
     conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
@@ -136,7 +143,7 @@ pub(crate) fn checkpoint(conn: &Connection) {
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version >= 2 {
+    if version >= 3 {
         return Ok(());
     }
     // Another process may be migrating too; re-check under the write lock.
@@ -155,6 +162,26 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         for (id, url) in urls {
             if let Some(domain) = crate::secrets::domain(&url) {
                 set.execute(rusqlite::params![domain, id])?;
+            }
+        }
+        drop(set);
+    }
+    if version < 3 {
+        tx.execute_batch(V3)?;
+        // `text` holds the clip up to 64 KiB, far above what detection reads.
+        let texts: Vec<(i64, String)> = tx
+            .prepare(
+                "SELECT id, text FROM paste_items WHERE kind IN ('text', 'url') \
+                 AND secret_kind IS NULL AND text IS NOT NULL AND length(text) <= ?1",
+            )?
+            .query_map([crate::contacts::MAX_CHARS as i64 * 2], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut set = tx.prepare("UPDATE paste_items SET contact = ?1 WHERE id = ?2")?;
+        for (id, text) in texts {
+            if let Some(found) = crate::contacts::join(&crate::contacts::detect(&text)) {
+                set.execute(rusqlite::params![found, id])?;
             }
         }
         drop(set);

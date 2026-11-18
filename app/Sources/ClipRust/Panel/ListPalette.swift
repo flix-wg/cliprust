@@ -30,6 +30,7 @@ extension ItemFilter {
         case .all: "all"
         case .kind(let kind): "kind:\(kind.rawValue)"
         case .keys: "keys"
+        case .contacts: "contacts"
         case .list(let name): "list:\(name)"
         }
     }
@@ -47,6 +48,7 @@ extension ItemFilter {
         case .kind(.image): "photo"
         case .kind(.file): "doc"
         case .keys: "key.horizontal"
+        case .contacts: "person.crop.circle"
         case .list(Item.pinnedList): "pin"
         case .list: "list.bullet"
         }
@@ -57,6 +59,7 @@ extension ItemFilter {
         switch head {
         case "all": self = .all
         case "keys": self = .keys
+        case "contacts": self = .contacts
         case "kind": guard let kind = ItemKind(rawValue: tail) else { return nil }; self = .kind(kind)
         case "list": self = .list(tail)
         default: return nil
@@ -118,16 +121,18 @@ extension PanelModel {
         case (.create(let name), _):
             Task { if await app.createList(name) { filter = .list(name) } else { NSSound.beep() } }
         case (.save(let name), _):
-            let (q, kind, token) = (query, filter.kind, source)
+            let (q, kind, token, contacts) = (query, filter.kind, source, filter == .contacts)
             Task {
-                // The same terms and pending `from:` app the search uses.
+                // The same terms, `is:` type and pending `from:` app the search uses.
                 var terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
+                let contact = terms.compactMap(Self.contactType).last ?? (contacts ? "any" : nil)
+                terms.removeAll { Self.contactType(in: $0) != nil }
                 var bundle = token?.bundleId
                 if bundle == nil, let core = app.core, let named = await Self.namedApp(in: terms, core: core) {
                     bundle = named.app.bundleId
                     terms.removeAll { $0 == named.term }
                 }
-                guard await app.createList(name, terms: terms, kind: kind, app: bundle) else { return NSSound.beep() }
+                guard await app.createList(name, terms: terms, kind: kind, app: bundle, contact: contact) else { return NSSound.beep() }
                 clearSearch()
                 filter = .list(name)
             }
@@ -151,7 +156,7 @@ extension PanelModel {
     }
 
     private func isTaken(_ name: String) -> Bool {
-        AppState.isReserved(name) || ([Item.keysList, Item.idsList] + app.lists.map(\.name)).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        AppState.isReserved(name) || ([Item.keysList, Item.idsList, ItemFilter.contacts.title] + app.lists.map(\.name)).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Prefix matches of any key first, then substring matches.

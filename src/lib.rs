@@ -1,6 +1,7 @@
 //! Clipboard history core: capture, dedup, compressed storage and FTS5 search.
 
 pub mod capture;
+pub mod contacts;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 #[cfg(feature = "pastenow-import")]
@@ -13,6 +14,7 @@ mod schema;
 pub mod secrets;
 pub mod store;
 
+pub use contacts::Contact;
 pub use model::{
     AppInfo, Capture, Item, ItemSummary, Kind, Rep, Secret, SecretKind, Settings, format,
 };

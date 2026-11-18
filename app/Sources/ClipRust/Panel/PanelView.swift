@@ -222,6 +222,12 @@ struct RowMenu: View {
         Button("Paste") { model.perform(.choose(.standard), item) }
         Button("Paste as Plain Text") { model.perform(.choose(.plain), item) }
         Button("Copy") { model.perform(.choose(.copyOnly), item) }
+        if !item.contacts.isEmpty {
+            Divider()
+            ForEach(item.contacts, id: \.self) { type in
+                Button(Item.contactAction(type)) { model.perform(.openContact(type), item) }
+            }
+        }
         Divider()
         Button(model.app.pinnedIDs.contains(item.id) ? "Unpin" : "Pin") { model.perform(.togglePin, item) }
         Menu("Add to List") {

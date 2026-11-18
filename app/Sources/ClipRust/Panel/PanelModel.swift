@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 enum ItemFilter: Hashable {
-    case all, kind(ItemKind), keys, list(String)
+    case all, kind(ItemKind), keys, contacts, list(String)
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum ItemFilter: Hashable {
         case .kind(.image): "Images"
         case .kind(.file): "Files"
         case .keys: "Keys"
+        case .contacts: "Contacts"
         case .list(let name): name
         }
     }
@@ -22,7 +23,7 @@ enum ChooseMode { case standard, plain, copyOnly }
 enum PanelAction {
     case choose(ChooseMode)
     case addToList(String), newList, removeFromList(String), togglePin
-    case rename, note, revealInFinder, quickLook, delete
+    case rename, note, revealInFinder, quickLook, delete, openContact(String)
 }
 
 /// An app named by a search term; accepting it turns the term into the app token.
@@ -69,7 +70,7 @@ final class PanelModel {
         self.app = app
     }
 
-    /// Bar order: All, pinned lists, Keys, the type filters, then the other lists.
+    /// Bar order: All, pinned lists, Keys, Contacts, the type filters, then the other lists.
     /// Pinned shows only while it holds items.
     func filters(kinds: Bool = Prefs.showTypeFilters) -> [ItemFilter] {
         let lists = app.orderedLists.map(\.name)
@@ -77,6 +78,7 @@ final class PanelModel {
         let pinned = lists.filter(app.pinnedLists.contains)
         var out: [ItemFilter] = [.all] + pinned.map(ItemFilter.list)
         if app.hasKeysList { out.append(.keys) }
+        if app.hasContacts || filter == .contacts { out.append(.contacts) }
         if kinds { out += ItemFilter.kinds }
         return out + lists.filter { !pinned.contains($0) }.map(ItemFilter.list)
     }
@@ -100,6 +102,7 @@ final class PanelModel {
         switch filter {
         case .all: return "Nothing copied yet"
         case .keys: return "No keys yet"
+        case .contacts: return "No phone numbers, emails or addresses yet"
         case .kind: return "No \(filter.title.lowercased()) yet"
         case .list(let name): return "\(name) is empty"
         }
@@ -165,7 +168,9 @@ final class PanelModel {
         loadedRevision = core.revision.load(ordering: .relaxed)
         let (q, f, token, hasKeys) = (query, filter, source, app.hasKeysList)
         Task {
-            let terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
+            let words = q.split(whereSeparator: \.isWhitespace).map(String.init)
+            let terms = words.filter { Self.contactType(in: $0) == nil }
+            let contact = words.compactMap(Self.contactType).last ?? (f == .contacts ? "any" : nil)
             var named: AppSuggestion?
             var suggested: AppSuggestion?
             if token == nil { named = await Self.namedApp(in: terms, core: core) }
@@ -177,15 +182,20 @@ final class PanelModel {
                     }
                 }
             }
-            let text = named.map { n in terms.filter { $0 != n.term }.joined(separator: " ") } ?? q
+            let text = named == nil && terms.count == words.count ? q
+                : (named.map { n in terms.filter { $0 != n.term } } ?? terms).joined(separator: " ")
             let bundle = token?.bundleId ?? named?.app.bundleId
             let found: [Item]?
             do {
                 switch f {
-                case .all: found = try await core.items(query: text, app: bundle, limit: Self.pageSize)
-                case .kind(let kind): found = try await core.items(query: text, kind: kind, app: bundle, limit: Self.pageSize)
-                case .keys: found = hasKeys ? try await core.items(query: text, list: Item.keysList, app: bundle, limit: Self.pageSize) : []
-                case .list(let name): found = try await core.items(query: text, list: name, app: bundle, limit: Self.pageSize)
+                case .all, .contacts: found = try await core.items(query: text, app: bundle, contact: contact, limit: Self.pageSize)
+                case .kind(let kind):
+                    found = try await core.items(query: text, kind: kind, app: bundle, contact: contact, limit: Self.pageSize)
+                case .keys:
+                    found = hasKeys ? try await core.items(query: text, list: Item.keysList, app: bundle, contact: contact,
+                                                           limit: Self.pageSize) : []
+                case .list(let name):
+                    found = try await core.items(query: text, list: name, app: bundle, contact: contact, limit: Self.pageSize)
                 }
             } catch {
                 found = nil
@@ -200,9 +210,9 @@ final class PanelModel {
                 selectedID = items.first?.id
             }
             // `from:mail ` / `@mail ` becomes the token once a space follows it.
-            if let named, named.term != terms.last || q.last?.isWhitespace == true {
+            if let named, named.term != words.last || q.last?.isWhitespace == true {
                 source = named.app
-                query = text
+                query = words.filter { $0 != named.term }.joined(separator: " ")
             }
         }
     }
@@ -215,6 +225,17 @@ final class PanelModel {
             }
         }
         return nil
+    }
+
+    /// `is:phone`, `is:email`, `is:address`, or `is:contact` for any of them.
+    static func contactType(in term: String) -> String? {
+        switch term.lowercased() {
+        case "is:phone": "phone"
+        case "is:email": "email"
+        case "is:address": "address"
+        case "is:contact": "any"
+        default: nil
+        }
     }
 
     /// The app named by `from:mail` or `@mail`.

@@ -7,8 +7,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use cliprust::monitor::{self, Event};
 use cliprust::{
-    Capture, Facet, Ingest, ItemSummary, Kind, Rule, SecretFilter, SecretKind, SortType, Store,
-    capture, now_ms, secrets,
+    Capture, Contact, Facet, Find, Ingest, ItemSummary, Kind, Rule, SecretFilter, SecretKind,
+    SortType, Store, capture, now_ms, secrets,
 };
 
 type CliResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -43,6 +43,9 @@ enum Cmd {
         limit: usize,
         #[arg(long)]
         list: Option<String>,
+        /// Only phone numbers, emails, addresses or any of them
+        #[arg(long, value_parser = parse_contact)]
+        contact: Option<ContactFilter>,
     },
     /// Find items containing every term as a substring
     Search {
@@ -50,6 +53,8 @@ enum Cmd {
         terms: Vec<String>,
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
+        #[arg(long, value_parser = parse_contact)]
+        contact: Option<ContactFilter>,
     },
     /// Print an item's full text
     Show {
@@ -215,17 +220,45 @@ fn run(cli: Cli) -> CliResult {
             };
             return watch(store, config, &path);
         }
-        Cmd::List { limit, list: None } => print_items(&store.recent(limit)?),
+        Cmd::List {
+            limit,
+            list: None,
+            contact,
+        } => {
+            let find = Find {
+                contact,
+                ..Find::default()
+            };
+            print_items(&store.find(&find, limit, now_ms())?);
+        }
         Cmd::List {
             limit,
             list: Some(name),
+            contact,
         } => {
             let list = store
                 .list_by_name(&name)?
                 .ok_or_else(|| format!("no list named {name:?}"))?;
-            print_items(&store.list_items(&list, limit, now_ms())?);
+            let find = Find {
+                list: Some(&list),
+                contact,
+                ..Find::default()
+            };
+            print_items(&store.find(&find, limit, now_ms())?);
         }
-        Cmd::Search { terms, limit } => print_items(&store.search(&terms.join(" "), limit)?),
+        Cmd::Search {
+            terms,
+            limit,
+            contact,
+        } => {
+            let terms = terms.join(" ");
+            let find = Find {
+                text: Some(&terms),
+                contact,
+                ..Find::default()
+            };
+            print_items(&store.find(&find, limit, 0)?);
+        }
         Cmd::Show { id } => {
             let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
             match item.text() {
@@ -439,6 +472,19 @@ fn watch(store: Store, config: monitor::Config, path: &Path) -> CliResult {
     }
     #[cfg(not(target_os = "macos"))]
     Ok(monitor::run(store, config, on_event)?)
+}
+
+/// `None` matches any contact; an alias so clap reads one value.
+type ContactFilter = Option<Contact>;
+
+/// `phone`, `email`, `address`, or `any` for all three.
+fn parse_contact(s: &str) -> Result<ContactFilter, String> {
+    match s {
+        "any" => Ok(None),
+        _ => Contact::parse(s)
+            .map(Some)
+            .ok_or_else(|| "expected phone, email, address or any".to_owned()),
+    }
 }
 
 fn secret_line(it: &ItemSummary, with_provider: bool) -> String {

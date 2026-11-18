@@ -4,6 +4,7 @@
 use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 
+use crate::contacts::Contact;
 use crate::model::Kind;
 
 /// Case-insensitive (ASCII) substring test on text, title and note; binds
@@ -42,6 +43,11 @@ pub enum Rule {
     /// First copied since local midnight.
     CreatedToday,
     Secret,
+    /// Any contact when `contact` is absent.
+    Contact {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact: Option<Contact>,
+    },
 }
 
 impl Rule {
@@ -78,7 +84,19 @@ impl Rule {
                     .into()
             }
             Rule::Secret => "p.secret_kind = 'key'".into(),
+            Rule::Contact { contact } => contact_sql(*contact, params),
         }
+    }
+}
+
+/// Items tagged with `contact`, or with any contact for `None`.
+pub(crate) fn contact_sql(contact: Option<Contact>, params: &mut Vec<Value>) -> String {
+    match contact {
+        Some(c) => {
+            params.push(c.as_str().to_owned().into());
+            "instr(',' || p.contact || ',', ',' || ? || ',') > 0".into()
+        }
+        None => "p.contact IS NOT NULL".into(),
     }
 }
 

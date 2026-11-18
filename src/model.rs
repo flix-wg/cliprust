@@ -190,6 +190,8 @@ pub struct ItemSummary {
     pub secret_kind: Option<SecretKind>,
     pub secret_provider: Option<String>,
     pub note: Option<String>,
+    /// Phone, email or address recognised in a short text clip.
+    pub contact: Vec<crate::Contact>,
     pub created_at: i64,
     pub last_used_at: i64,
     pub byte_size: i64,

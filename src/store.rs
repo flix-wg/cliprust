@@ -9,8 +9,8 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 
 use crate::model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, SecretKind, Settings};
-use crate::rules::{CONTAINS_SQL, Rule, SortType};
-use crate::{Error, Result, schema, secrets};
+use crate::rules::{CONTAINS_SQL, Rule, SortType, contact_sql};
+use crate::{Contact, Error, Result, contacts, schema, secrets};
 
 pub const KEYS_LIST: &str = "Keys";
 /// IDs get their own list so that Keys holds only masked secrets.
@@ -23,7 +23,7 @@ const ZSTD_LEVEL: i32 = 3;
 const INDEXED_TEXT_LIMIT: usize = 64 * 1024;
 const SUMMARY_SQL: &str = "SELECT p.id, p.kind, p.title, substr(p.text, 1, 200), a.bundle_id, \
      p.source_url, p.source_domain, p.secret_kind, p.secret_provider, p.note, \
-     p.created_at, p.last_used_at, p.byte_size \
+     p.created_at, p.last_used_at, p.byte_size, p.contact \
      FROM paste_items p LEFT JOIN applications a ON a.id = p.app_id";
 /// Items in a manual list are kept by retention and `prune`.
 const UNLISTED: &str = "p.id NOT IN (SELECT item_id FROM paste_list_items)";
@@ -72,6 +72,8 @@ pub struct Find<'a> {
     /// Bundle id of the app the item was copied from.
     pub app: Option<&'a str>,
     pub list: Option<&'a PasteList>,
+    /// `Some(None)` matches items with any contact.
+    pub contact: Option<Option<Contact>>,
 }
 
 /// An app with the number of stored items copied from it.
@@ -175,7 +177,8 @@ impl Store {
                 tx.execute(
                     "UPDATE paste_items SET text = ?1, \
                      title = CASE WHEN secret_kind = 'id' THEN ?2 ELSE coalesce(title, ?2) END, \
-                     secret_provider = ?3, secret_kind = ?4, source_domain = coalesce(?5, source_domain) \
+                     secret_provider = ?3, secret_kind = ?4, source_domain = coalesce(?5, source_domain), \
+                     contact = NULL \
                      WHERE id = ?6",
                     params![secret.masked, secret.name, secret.provider, secret.kind.as_str(), domain, id],
                 )?;
@@ -195,6 +198,12 @@ impl Store {
             }
             Ingest::Duplicate(id)
         } else {
+            let contact = match (&cap.secret, cap.kind) {
+                (None, Kind::Text | Kind::Url) => cap
+                    .text()
+                    .and_then(|t| contacts::join(&contacts::detect(t))),
+                _ => None,
+            };
             let (text, title, provider, secret_kind) = match &cap.secret {
                 Some(s) => (
                     Some(s.masked.as_str()),
@@ -212,8 +221,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO paste_items (kind, text, title, created_at, last_used_at, app_id, \
                  base_uniform_type, checksum, byte_size, source_url, source_title, secret_provider, \
-                 secret_kind, source_domain) \
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 secret_kind, source_domain, contact) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     cap.kind.as_str(),
                     text,
@@ -227,7 +236,8 @@ impl Store {
                     cap.source_title,
                     provider,
                     secret_kind,
-                    domain
+                    domain,
+                    contact
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -289,6 +299,9 @@ impl Store {
         if let Some(kind) = f.kind {
             clauses.push("p.kind = ?".into());
             params.push(Value::from(kind.as_str().to_owned()));
+        }
+        if let Some(contact) = f.contact {
+            clauses.push(contact_sql(contact, &mut params));
         }
         if let Some(app) = f.app {
             clauses.push("p.app_id = (SELECT id FROM applications WHERE bundle_id = ?)".into());
@@ -737,6 +750,7 @@ fn summary_from_row(r: &Row<'_>) -> rusqlite::Result<ItemSummary> {
         created_at: r.get(10)?,
         last_used_at: r.get(11)?,
         byte_size: r.get(12)?,
+        contact: contacts::split(r.get::<_, Option<String>>(13)?.as_deref()),
     })
 }
 
@@ -1012,6 +1026,7 @@ mod tests {
             kind: Some(Kind::Url),
             app: Some("com.home"),
             list: Some(&links),
+            contact: None,
         };
         assert_eq!(ids(s.find(&home_links, 10, 5_000).unwrap()), [home]);
         let names = |q| -> Vec<String> {
@@ -1058,12 +1073,28 @@ mod tests {
              checksum, byte_size, source_url, secret_provider) VALUES \
              ('text', 'sk-pro…Ab7c', 'OPENAI_API_KEY', 1, 1, 't', 1, 1, \
               'https://platform.openai.com/api-keys', 'OpenAI API key'), \
-             ('text', 'meeting notes', NULL, 2, 2, 't', 2, 1, NULL, NULL);",
+             ('text', 'meeting notes', NULL, 2, 2, 't', 2, 1, NULL, NULL), \
+             ('text', 'Bahnhofstrasse 12, 8001 Zürich', NULL, 3, 3, 't', 3, 1, NULL, NULL);",
         )
         .unwrap();
         drop(conn);
 
         let s = Store::open(&path).unwrap();
+        let rule: Rule = serde_json::from_str(r#"{"type":"contact","contact":"address"}"#).unwrap();
+        let list = PasteList {
+            id: 0,
+            name: "Addresses".into(),
+            rule: Some(rule),
+            sort: SortType::Recent,
+            sort_weight: 0.0,
+        };
+        let found = s.list_items(&list, 10, 4).unwrap();
+        assert_eq!(
+            (ids(found.clone()), found[0].contact.clone()),
+            (vec![3], vec![Contact::Address])
+        );
+        let any: Rule = serde_json::from_str(r#"{"type":"contact"}"#).unwrap();
+        assert_eq!(any, Rule::Contact { contact: None });
         let keys = s.secrets(&SecretFilter::default(), 10).unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].secret_kind, Some(SecretKind::Key));

@@ -19,6 +19,8 @@ struct Item: Codable, Identifiable, Hashable, Sendable {
     var createdAt: Int64
     var lastUsedAt: Int64
     var byteSize: Int64
+    /// Detected `phone`, `email`, `address`; missing when none.
+    var contact: [String]?
     // Only in `item` responses.
     var text: String?
     var formats: [String]?
@@ -34,6 +36,43 @@ extension Item {
     var copiedAt: Date { Date(milliseconds: lastUsedAt) }
     var firstCopiedAt: Date { Date(milliseconds: createdAt) }
     var oneLine: String { (title ?? preview ?? "").collapsingWhitespace }
+    var contacts: [String] { contact ?? [] }
+
+    static func contactSymbol(_ type: String) -> String {
+        switch type {
+        case "phone": "phone"
+        case "email": "envelope"
+        default: "mappin.and.ellipse"
+        }
+    }
+
+    static func contactAction(_ type: String) -> String {
+        switch type {
+        case "phone": "Call"
+        case "email": "New Email"
+        default: "Open in Maps"
+        }
+    }
+
+    /// `tel:` or `mailto:` for the first number or address found in `text`; Maps for the whole text.
+    static func contactURL(_ type: String, in text: String) -> URL? {
+        let range = NSRange(text.startIndex..., in: text)
+        switch type {
+        case "phone":
+            let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.phoneNumber.rawValue)
+            let number = detector?.firstMatch(in: text, range: range)?.phoneNumber ?? ""
+            let dial = number.filter { $0.isNumber || $0 == "+" }
+            return dial.isEmpty ? nil : URL(string: "tel:\(dial)")
+        case "email":
+            let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+            return detector?.matches(in: text, range: range).lazy.compactMap(\.url).first { $0.scheme == "mailto" }
+        default:
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "&+=?")
+            let q = text.collapsingWhitespace.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+            return q.isEmpty ? nil : URL(string: "maps://?q=\(q)")
+        }
+    }
 
     var symbol: String {
         if isSecret { return isID ? "number" : "key.horizontal" }

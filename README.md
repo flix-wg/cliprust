@@ -11,6 +11,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 - **Search everything.** Full-text search over all history, not only previews.
 - **Search by app.** Type `mail` or `codex` to filter by the app you copied from, or use `from:mail`.
+- **Phone numbers, emails, addresses.** Recognised in short clips; filter with `is:phone` or the Contacts chip, then call, mail or map them from the row menu.
 - **Lists.** Manual lists, saved searches, pinned items. Jump between them from the keyboard.
 - **Keys stay hidden.** API keys and tokens are recognised, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them.
 - **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.
@@ -22,7 +23,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 | Key | Action |
 | --- | --- |
-| ⇧⌘V | Open the panel (⌥⇧⌘V while PasteNow is running) |
+| ⇧⌘V | Open the panel |
 | ⏎ / ⌥⏎ / ⌘⏎ | Paste / paste as plain text / copy only |
 | ⌘1 … ⌘9 | Paste row N |
 | ⌘L | Go to a list or app |

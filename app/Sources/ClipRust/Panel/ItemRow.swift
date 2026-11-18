@@ -18,6 +18,14 @@ struct ItemRow: View {
         HStack(spacing: 8) {
             leading
                 .frame(width: 18, height: 18)
+            if !item.contacts.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(item.contacts, id: \.self) { Image(systemName: Item.contactSymbol($0)) }
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.leading, -3)
+            }
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
             trailing

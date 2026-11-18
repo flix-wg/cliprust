@@ -36,7 +36,8 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 - **Layout, top to bottom:**
   1. **Search field.** It is always focused, uses 15 pt text and has a magnifier glyph. Placeholder: "Search clipboard". Typing filters at once, searching text, title and note, across the whole history and not just the loaded page.
      - **Source app.** A term that names an app (prefix of its name, a word of it, or a bundle-id component, so "codex" finds `com.openai.codex`) shows a "Copied from Mail · 42" row above the results. ⇥, a click, or ↑ then ⏎ turns it into an app token (icon + name capsule) before the text; the rest of the query then searches that app only. `from:mail` or `@mail` filters directly and becomes the token once a space follows. ⌫ at the start of the field or the token's × removes it. ⌘L lists apps under "Apps" too.
-  2. **Filter bar.** A row of compact capsule chips: All, pinned lists (Pinned, the list of pinned items, joins them while it holds any), Keys (once a key exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
+     - **Contacts.** `is:phone`, `is:email`, `is:address` or `is:contact` (any of them) keep only clips the core recognised as a phone number, email address or postal address; the rest of the query searches within them. ⌘⇧S saves the type into the smart list.
+  2. **Filter bar.** A row of compact capsule chips: All, pinned lists (Pinned, the list of pinned items, joins them while it holds any), Keys (once a key exists), Contacts (once a phone number, email or address exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
   3. **Body.** The list is on the left. A preview pane (toggled with ⌘P, on by default) takes 42 % of the width on the right.
 - **List rows.** A row is 34 pt high in Compact and 44 pt in Comfortable. Each row contains:
   - **leading:** the source app's icon at 16 pt, or a kind glyph when the app is unknown
@@ -44,6 +45,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - **trailing:** relative time in secondary colour, then a `⌘1`–`⌘9` hint on the first nine rows
   - a pin when the item is pinned (⌘⇧P); pinned items are never pruned
   - a note glyph when the item has a note
+  - a phone, envelope or map-pin glyph after the leading icon when the clip is a phone number, email or address
 - **Selection.** The selected row shows an accent-tinted rounded highlight (radius 7). Hover shows a subtle fill.
 - **Preview pane** content by kind:
   - **text:** selectable monospace when it looks like code, otherwise the system font
@@ -73,7 +75,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⌘⇧P | pin or unpin the item |
 | ⌘L | go to list: palette of every chip, then apps; ⏎ on an app shows its clips, ⏎ on an unknown name creates a manual list and switches to it |
 | ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
-| ⌘⇧S | save search as a smart list (text, app token and the active type filter) and switch to it |
+| ⌘⇧S | save search as a smart list (text, app token, `is:` type and the active type or Contacts filter) and switch to it |
 | ⌃1…⌃9 | jump to filter chip N |
 | ⌘R | rename (title) |
 | ⌘N | edit note |
@@ -85,7 +87,7 @@ The list palette is a 280 pt glass overlay under the search field: type to filte
 
 Clicking outside the panel closes it.
 
-**Right-click on a row:** Paste · Paste as Plain Text · Copy · Add to List ▸ · Rename… · Edit Note… · Reveal in Finder (files) · Delete.
+**Right-click on a row:** Paste · Paste as Plain Text · Copy · Call / New Email / Open in Maps (contacts; the first number or address found, Maps gets the whole clip) · Add to List ▸ · Rename… · Edit Note… · Reveal in Finder (files) · Delete.
 
 ### 3. Keys & IDs window
 

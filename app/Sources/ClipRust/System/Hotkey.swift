@@ -84,15 +84,7 @@ final class Hotkey {
         unregister()
         installHandler()
         let wanted = preferred
-        if let owner = otherOwner(of: wanted) {
-            if wanted == .standard, otherOwner(of: .fallback) == nil, tryRegister(.fallback) {
-                active = .fallback
-                message = "\(owner) uses \(wanted.display), so ClipRust uses \(Shortcut.fallback.display) while \(owner) is running."
-            } else {
-                active = nil
-                message = "\(owner) uses \(wanted.display). Choose another shortcut."
-            }
-        } else if tryRegister(wanted) {
+        if tryRegister(wanted) {
             active = wanted
             message = nil
         } else if wanted == .standard, tryRegister(.fallback) {
@@ -102,19 +94,6 @@ final class Hotkey {
             active = nil
             message = "\(wanted.display) is taken by another app. Choose another shortcut."
         }
-    }
-
-    /// Carbon does not report shortcuts other apps registered, so PasteNow, the app
-    /// ClipRust replaces and often runs beside, is checked by name.
-    private func otherOwner(of s: Shortcut) -> String? {
-        let id = "app.pastenow.PasteNow"
-        guard !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty else { return nil }
-        var taken = Shortcut.standard
-        if let d = UserDefaults(suiteName: id)?.dictionary(forKey: "shortcutkit-show-interface"),
-           let code = d["carbonKeyCode"] as? Int, let mods = d["carbonModifiers"] as? Int {
-            taken = Shortcut(keyCode: UInt32(code), modifiers: UInt32(mods), key: "")
-        }
-        return taken.keyCode == s.keyCode && taken.modifiers == s.modifiers ? "PasteNow" : nil
     }
 
     func unregister() {
@@ -135,14 +114,6 @@ final class Hotkey {
     private func installHandler() {
         guard !handlerInstalled else { return }
         handlerInstalled = true
-        let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { note in
-                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                guard app?.bundleIdentifier == "app.pastenow.PasteNow" else { return }
-                MainActor.assumeIsolated { Hotkey.shared.register() }
-            }
-        }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
             MainActor.assumeIsolated { Hotkey.shared.onPress() }
