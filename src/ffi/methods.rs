@@ -195,9 +195,18 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
             platform::with_autorelease_pool(|| -> R<()> {
                 let ctx = clipboard_rs::ClipboardContext::new()
                     .map_err(|e| Error::new(Code::Io, e.to_string()))?;
-                capture::write(&ctx, &item.reps, plain)?;
                 #[cfg(target_os = "macos")]
-                crate::monitor::own_change(platform::pasteboard_state().0);
+                let before = platform::pasteboard_state().0;
+                capture::write(&ctx, &item.reps, plain)?;
+                // The write's clearContents is its only change; anything more
+                // came from another app in between, which the watcher must see.
+                #[cfg(target_os = "macos")]
+                {
+                    let after = platform::pasteboard_state().0;
+                    if after == before + 1 {
+                        crate::monitor::own_change(after);
+                    }
+                }
                 Ok(())
             })?;
             store.touch(id, now)?;
