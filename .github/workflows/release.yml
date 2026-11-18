@@ -1,0 +1,127 @@
+name: Release
+
+# Builds arm64 (Apple silicon) binaries only: ClipRust.app and the cliprust CLI.
+# Signing and notarization run only when the APPLE_DEVELOPER_ID_* and
+# APPLE_NOTARY_* secrets exist; otherwise the release is unsigned (ad-hoc).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  SIGNING: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' }}
+  NOTARIZING: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' && secrets.APPLE_NOTARY_APPLE_ID != '' }}
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # build-app.sh counts commits for CFBundleVersion
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+
+      - name: Build the CLI
+        run: cargo build --release --locked --bin cliprust
+
+      - name: Build the app
+        run: app/scripts/build-app.sh
+
+      - name: Import the Developer ID certificate
+        if: env.SIGNING == 'true'
+        env:
+          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(uuidgen)
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "No Developer ID Application identity in the certificate" >&2; exit 1; }
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Sign with Developer ID
+        if: env.SIGNING == 'true'
+        run: |
+          cat > "$RUNNER_TEMP/ClipRust.entitlements" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.automation.apple-events</key><true/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --options runtime --timestamp \
+            --entitlements "$RUNNER_TEMP/ClipRust.entitlements" \
+            --sign "$SIGN_IDENTITY" app/build/ClipRust.app
+          codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" target/release/cliprust
+          codesign --verify --strict app/build/ClipRust.app
+          codesign --verify --strict target/release/cliprust
+
+      - name: Notarize
+        if: env.NOTARIZING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          staging="$RUNNER_TEMP/notarize"
+          mkdir -p "$staging"
+          cp -R app/build/ClipRust.app "$staging/"
+          cp target/release/cliprust "$staging/"
+          ditto -c -k "$staging" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$PASSWORD" --wait
+          xcrun stapler staple app/build/ClipRust.app
+
+      - name: Package
+        run: |
+          mkdir -p "$DIST"
+          ditto -c -k --keepParent app/build/ClipRust.app "$DIST/ClipRust-$VERSION-macos-arm64.zip"
+          tar -czf "$DIST/cliprust-$VERSION-macos-arm64.tar.gz" -C target/release cliprust
+          (cd "$DIST" && shasum -a 256 *.zip *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            found && !/^\[[^]]*\]: / { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "No CHANGELOG.md section for $VERSION" >&2
+            exit 1
+          fi
+          if [ "$SIGNING" != "true" ]; then
+            printf '\nThis build is not signed with a Developer ID. See "Install" in the README for how to open it.\n' >> "$RUNNER_TEMP/notes.md"
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$DIST"/* \
+            --title "ClipRust $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag

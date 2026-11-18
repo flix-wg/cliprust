@@ -2,9 +2,13 @@
 name = "cliprust"
 version = "0.1.0"
 edition = "2024"
-description = "Low-memory clipboard history core with SQLite FTS5 search"
+rust-version = "1.89"
+description = "Low-memory clipboard history for macOS: Rust core and CLI with SQLite FTS5 search"
 license = "MIT"
 repository = "https://github.com/flix-wg/cliprust"
+readme = "README.md"
+keywords = ["clipboard", "clipboard-manager", "macos", "sqlite", "cli"]
+categories = ["command-line-utilities", "os::macos-apis"]
 publish = false
 
 [lib]

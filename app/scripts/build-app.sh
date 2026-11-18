@@ -6,7 +6,9 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$APP_DIR/.." && pwd)"
 IDENTITY="${CLIPRUST_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n "s/.*\"\(Apple Development: [^\"]*\)\".*/\1/p" | head -1)}"
 IDENTITY="${IDENTITY:--}"
-VERSION="0.1.0"
+# Version comes from Cargo.toml; the build number is the commit count.
+VERSION="$(sed -n "s/^version = \"\(.*\)\"/\1/p" "$ROOT/Cargo.toml" | head -1)"
+BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 OUT="$APP_DIR/build/ClipRust.app"
 
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
@@ -44,7 +46,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>$BUILD</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSUIElement</key><true/>
