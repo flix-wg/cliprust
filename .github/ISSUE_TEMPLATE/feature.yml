@@ -4,7 +4,7 @@ labels: [enhancement]
 body:
   - type: markdown
     attributes:
-      value: Check [docs/roadmap.md](https://github.com/flix-wg/cliprust/blob/main/docs/roadmap.md) first; it lists planned features and what is out of scope.
+      value: Check [docs/roadmap.md](https://github.com/flix-wg/cliprust/blob/master/docs/roadmap.md) first; it lists planned features and what is out of scope.
   - type: textarea
     id: problem
     attributes:
