@@ -67,6 +67,18 @@ struct TextPreview: NSViewRepresentable {
         tv.isEditable = false
         tv.isSelectable = true
         tv.drawsBackground = false
+        // Read-only: keep it off the text-checking queue (language ID, spelling, detectors).
+        tv.enabledTextCheckingTypes = 0
+        tv.isContinuousSpellCheckingEnabled = false
+        tv.isGrammarCheckingEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.isAutomaticDataDetectionEnabled = false
+        tv.isAutomaticLinkDetectionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextCompletionEnabled = false
+        tv.inlinePredictionType = .no
         tv.textContainerInset = NSSize(width: 10, height: 12)
         return scroll
     }
