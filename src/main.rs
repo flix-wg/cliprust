@@ -61,6 +61,9 @@ enum Cmd {
     /// Print an item's full text
     Show {
         id: i64,
+        /// Print a key's value instead of its masked form
+        #[arg(long)]
+        reveal: bool,
     },
     /// Put an item back on the clipboard
     Copy {
@@ -149,8 +152,12 @@ enum Cmd {
 enum KeysCmd {
     /// Providers and sites with how many keys and IDs each has
     Facets,
-    /// Replace the master key that encrypts stored keys
+    /// Replace the master key that encrypts stored keys (the old one stays
+    /// in the Keychain for older copies of the database until `prune`)
     Rotate,
+    /// Delete older master keys this database no longer uses; older copies
+    /// and backups then open only with their recovery code
+    Prune,
     /// Print the master key as a recovery code, for a password manager
     RecoveryCode,
     /// Put the master key back from a recovery code read from stdin
@@ -295,7 +302,13 @@ fn run(cli: Cli) -> CliResult {
             };
             print_items(&store.find(&find, limit, 0)?);
         }
-        Cmd::Show { id } => {
+        Cmd::Show { id, reveal } => {
+            let summary = store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            if summary.secret_kind == Some(SecretKind::Key) && !reveal {
+                println!("{}", summary.preview.unwrap_or_default());
+                eprintln!("#{id} is a key; add --reveal to print its value");
+                return Ok(());
+            }
             let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
             match item.text() {
                 Some(text) => println!("{text}"),
@@ -354,6 +367,21 @@ fn run(cli: Cli) -> CliResult {
             cmd: Some(KeysCmd::Rotate),
             ..
         } => println!("now using key generation {}", store.rotate_key()?),
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Prune),
+            ..
+        } => {
+            eprintln!(
+                "Older copies and backups of the database then open only with their recovery code."
+            );
+            if prompt("Type \"prune\" to delete the older keys: ")? != "prune" {
+                return Err("cancelled".into());
+            }
+            match store.prune_keys()?.as_slice() {
+                [] => println!("no older keys to delete"),
+                gens => println!("deleted key generations {gens:?}"),
+            }
+        }
         Cmd::Keys {
             cmd: Some(KeysCmd::RecoveryCode),
             ..
