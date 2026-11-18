@@ -17,16 +17,18 @@ struct AppIconView: View {
     }
 }
 
-/// The app filter in the search field; ⌫ at the start of the field or × removes it.
-struct AppToken: View {
-    let app: SourceApp
+/// An app or contact filter in the search field; ⌫ at the start of the field or × removes it.
+struct SearchToken<Icon: View>: View {
+    let title: String
+    let help: String
     let remove: () -> Void
+    @ViewBuilder let icon: Icon
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 5) {
-            AppIconView(bundleID: app.bundleId, size: 15)
-            Text(app.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+            icon
+            Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
             Button(action: remove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
@@ -36,7 +38,7 @@ struct AppToken: View {
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
-            .help("Show all apps")
+            .help(help)
         }
         .padding(.leading, 5)
         .padding(.trailing, 4)
@@ -47,9 +49,9 @@ struct AppToken: View {
     }
 }
 
-/// "Copied from Mail · 42" above the results; ⇥, ⏎ or a click makes it the token.
-struct AppSuggestionRow: View {
-    let suggestion: AppSuggestion
+/// "Copied from Mail · 42" or "Phone numbers · 12" above the results; ⇥, ⏎ or a click makes it the token.
+struct SuggestionRow: View {
+    let suggestion: Suggestion
     let selected: Bool
     @AppStorage(Prefs.Key.density) private var density = Density.compact
     @Environment(\.colorScheme) private var colorScheme
@@ -57,12 +59,23 @@ struct AppSuggestionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            AppIconView(bundleID: suggestion.app.bundleId)
-                .frame(width: 18, height: 18)
+            Group {
+                switch suggestion {
+                case .app(let s): AppIconView(bundleID: s.app.bundleId)
+                case .contact(let type, _, _): Image(systemName: type.symbol).font(.system(size: 13)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 18, height: 18)
             HStack(spacing: 4) {
-                Text("Copied from").foregroundStyle(.secondary)
-                Text(suggestion.app.title).fontWeight(.semibold)
-                Text("·  \(suggestion.app.count)").foregroundStyle(.secondary).monospacedDigit()
+                switch suggestion {
+                case .app(let s):
+                    Text("Copied from").foregroundStyle(.secondary)
+                    Text(s.app.title).fontWeight(.semibold)
+                    Text("·  \(s.app.count)").foregroundStyle(.secondary).monospacedDigit()
+                case .contact(let type, let count, _):
+                    Text(type.title).fontWeight(.semibold)
+                    Text("·  \(PanelModel.countText(count))").foregroundStyle(.secondary).monospacedDigit()
+                }
             }
             .font(.system(size: 13))
             .lineLimit(1)

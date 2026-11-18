@@ -208,9 +208,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             }
         case (kVK_Return, .option): run(.choose(.plain), item)
         case (kVK_Return, .command): run(.choose(.copyOnly), item)
-        case (kVK_Escape, []): model.query.isEmpty && model.source == nil ? close() : model.clearSearch()
+        case (kVK_Escape, []): model.hasSearch ? model.clearSearch() : close()
         case (kVK_Tab, []): if !model.acceptSuggestion() { model.cycleFilter(by: 1) }
-        case (kVK_Delete, []) where model.source != nil && caretAtStart: model.source = nil
+        case (kVK_Delete, []) where (model.source != nil || model.contactToken != nil) && caretAtStart: model.removeLastToken()
         case (kVK_Tab, .shift): model.cycleFilter(by: -1)
         case (kVK_LeftArrow, .command): model.cycleFilter(by: -1)
         case (kVK_RightArrow, .command): model.cycleFilter(by: 1)

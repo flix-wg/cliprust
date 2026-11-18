@@ -73,9 +73,16 @@ struct PanelView: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 if let source = model.source {
-                    AppToken(app: source) { model.source = nil }
+                    SearchToken(title: source.title, help: "Show all apps", remove: { model.source = nil }) {
+                        AppIconView(bundleID: source.bundleId, size: 15)
+                    }
                 }
-                TextField(model.source.map { "Search \($0.title)" } ?? "Search clipboard", text: $model.query)
+                if let type = model.contactToken {
+                    SearchToken(title: type.title, help: "Show all clips", remove: { model.contactToken = nil }) {
+                        Image(systemName: type.symbol).font(.system(size: 11, weight: .medium)).frame(width: 15, height: 15)
+                    }
+                }
+                TextField(model.searchPlaceholder, text: $model.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($searchFocused)
@@ -176,7 +183,7 @@ struct ItemList: View {
             ScrollView {
                 LazyVStack(spacing: 2) {
                     if let suggestion = model.suggestion {
-                        AppSuggestionRow(suggestion: suggestion, selected: model.suggestionSelected)
+                        SuggestionRow(suggestion: suggestion, selected: model.suggestionSelected)
                             .id("suggestion")
                             .onTapGesture { model.acceptSuggestion() }
                     }

@@ -45,7 +45,7 @@ enum PreviewRenderer {
                 model.query = query
                 model.source = token
                 model.items = SampleData.items.filter { token == nil ? $0.app == mail.bundleId || $0.id == 5 : $0.app == safari.bundleId && !$0.isSecret }
-                model.suggestion = token == nil ? AppSuggestion(app: mail, term: query) : nil
+                model.suggestion = token == nil ? .app(AppSuggestion(app: mail, term: query)) : nil
                 model.loaded = true
                 model.isVisible = true
                 model.selectedID = model.items.first?.id

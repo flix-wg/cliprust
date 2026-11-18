@@ -32,15 +32,75 @@ struct AppSuggestion: Equatable {
     let term: String
 }
 
+/// The contact token: `is:phone`, or a term like "phone" accepted from its suggestion.
+enum ContactFilter: String, CaseIterable {
+    case phone, email, address, any
+
+    var title: String {
+        switch self {
+        case .phone: "Phone numbers"
+        case .email: "Emails"
+        case .address: "Addresses"
+        case .any: "Contacts"
+        }
+    }
+
+    var symbol: String { self == .any ? "person.crop.circle" : Item.contactSymbol(rawValue) }
+
+    /// Words a search term of three or more letters may start.
+    var words: [String] {
+        switch self {
+        case .phone: ["phones", "numbers"]
+        case .email: ["emails", "e-mails"]
+        case .address: ["addresses"]
+        case .any: ["contacts"]
+        }
+    }
+
+    static func named(_ term: String) -> ContactFilter? {
+        let t = term.lowercased()
+        return t.count < 3 ? nil : allCases.first { $0.words.contains { $0.hasPrefix(t) } }
+    }
+
+    /// The first of the leading terms naming a type, with the terms it used ("mail address" is email).
+    static func named(in terms: [String]) -> (ContactFilter, [String])? {
+        for (i, term) in terms.prefix(6).enumerated() {
+            if term.lowercased() == "mail", i + 1 < terms.count, named(terms[i + 1]) == .address {
+                return (.email, [term, terms[i + 1]])
+            }
+            if let type = named(term) { return (type, [term]) }
+        }
+        return nil
+    }
+}
+
+/// The row above the results; ⇥, ⏎ or a click turns it into a token.
+enum Suggestion: Equatable {
+    case app(AppSuggestion)
+    case contact(ContactFilter, count: Int, terms: [String])
+
+    var terms: [String] {
+        switch self {
+        case .app(let s): [s.term]
+        case .contact(_, _, let terms): terms
+        }
+    }
+}
+
 @MainActor @Observable
 final class PanelModel {
     static let pageSize = 200
+    static let countCap = 1000
 
     let app: AppState
     var query = "" { didSet { if query != oldValue { reload(resetSelection: true) } } }
     /// The app token in the search field: only items copied from that app.
     var source: SourceApp? { didSet { if source?.bundleId != oldValue?.bundleId { reload(resetSelection: true) } } }
-    var suggestion: AppSuggestion?
+    /// The contact token: only phone numbers, emails, addresses or any of them.
+    var contactToken: ContactFilter? { didSet { if contactToken != oldValue { reload(resetSelection: true) } } }
+    var suggestion: Suggestion?
+    /// Items per contact type, counted once per open up to `countCap`.
+    var contactCounts: [ContactFilter: Int]?
     var suggestionSelected = false
     var filter: ItemFilter = .all {
         didSet {
@@ -77,7 +137,7 @@ final class PanelModel {
             .filter { $0 != Item.pinnedList || !app.pinnedIDs.isEmpty || filter == .list($0) }
         let pinned = lists.filter(app.pinnedLists.contains)
         var out: [ItemFilter] = [.all] + pinned.map(ItemFilter.list)
-        if app.hasKeysList { out.append(.keys) }
+        if app.settings.detectKeys || app.hasKeysList { out.append(.keys) }
         if app.hasContacts || filter == .contacts { out.append(.contacts) }
         if kinds { out += ItemFilter.kinds }
         return out + lists.filter { !pinned.contains($0) }.map(ItemFilter.list)
@@ -91,13 +151,23 @@ final class PanelModel {
     }
 
     func showsCount(_ f: ItemFilter) -> Bool {
-        loaded && filter == f && (f != .all || !query.isEmpty || source != nil)
+        loaded && filter == f && (f != .all || hasSearch)
     }
 
     var countLabel: String { items.count >= Self.pageSize ? "\(Self.pageSize)+" : "\(items.count)" }
 
+    var hasSearch: Bool { !query.isEmpty || source != nil || contactToken != nil }
+
+    var searchPlaceholder: String {
+        let scope = [contactToken?.title, source?.title].compactMap { $0 }
+        return scope.isEmpty ? "Search clipboard" : "Search \(scope.joined(separator: " from "))"
+    }
+
     var emptyMessage: String {
         if !query.isEmpty { return "No matches for “\(query)”" + (source.map { " from \($0.title)" } ?? "") }
+        if let contactToken {
+            return "No \(contactToken.title.lowercased())" + (source.map { " from \($0.title)" } ?? "")
+        }
         if let source { return "Nothing from \(source.title)" + (filter == .all ? "" : " in \(filter.title)") }
         switch filter {
         case .all: return "Nothing copied yet"
@@ -117,6 +187,7 @@ final class PanelModel {
     /// processes and retention change the store without bumping our revision.
     func prepareForShow() {
         now = Date()
+        contactCounts = nil
         resetSearch()
         selectedID = items.first?.id
         reload()
@@ -136,7 +207,27 @@ final class PanelModel {
     func clearSearch() {
         query = ""
         source = nil
+        contactToken = nil
     }
+
+    /// ⌫ at the start of the field drops the last token.
+    func removeLastToken() {
+        if contactToken != nil { contactToken = nil } else { source = nil }
+    }
+
+    func loadContactCounts() async -> [ContactFilter: Int] {
+        if let contactCounts { return contactCounts }
+        var out: [ContactFilter: Int] = [:]
+        if let core = app.core, app.hasContacts {
+            for type in ContactFilter.allCases {
+                out[type] = (try? await core.items(contact: type.rawValue, limit: Self.countCap))?.count ?? 0
+            }
+        }
+        contactCounts = out
+        return out
+    }
+
+    static func countText(_ n: Int) -> String { n >= countCap ? "\(countCap)+" : "\(n)" }
 
     private var isStale: Bool { app.core.map { $0.revision.load(ordering: .relaxed) != loadedRevision } ?? false }
 
@@ -166,18 +257,23 @@ final class PanelModel {
         generation += 1
         let gen = generation
         loadedRevision = core.revision.load(ordering: .relaxed)
-        let (q, f, token, hasKeys) = (query, filter, source, app.hasKeysList)
+        let (q, f, token, tokenType, hasKeys) = (query, filter, source, contactToken, app.hasKeysList)
         Task {
             let words = q.split(whereSeparator: \.isWhitespace).map(String.init)
             let terms = words.filter { Self.contactType(in: $0) == nil }
-            let contact = words.compactMap(Self.contactType).last ?? (f == .contacts ? "any" : nil)
+            let typed = words.last { Self.contactType(in: $0) != nil }
+            let contact = typed.flatMap(Self.contactType) ?? tokenType?.rawValue ?? (f == .contacts ? "any" : nil)
             var named: AppSuggestion?
-            var suggested: AppSuggestion?
+            var suggested: Suggestion?
             if token == nil { named = await Self.namedApp(in: terms, core: core) }
-            if token == nil, named == nil {
+            if tokenType == nil, typed == nil, let hit = ContactFilter.named(in: terms),
+               let n = await loadContactCounts()[hit.0], n > 0 {
+                suggested = .contact(hit.0, count: n, terms: hit.1)
+            }
+            if token == nil, named == nil, suggested == nil {
                 for term in terms.prefix(6) where Self.appName(in: term) == nil && term.count >= 2 {
                     if let hit = try? await core.apps(query: term).first {
-                        suggested = AppSuggestion(app: hit, term: term)
+                        suggested = .app(AppSuggestion(app: hit, term: term))
                         break
                     }
                 }
@@ -209,10 +305,15 @@ final class PanelModel {
             if resetSelection || !items.contains(where: { $0.id == selectedID }) {
                 selectedID = items.first?.id
             }
-            // `from:mail ` / `@mail ` becomes the token once a space follows it.
-            if let named, named.term != words.last || q.last?.isWhitespace == true {
-                source = named.app
-                query = words.filter { $0 != named.term }.joined(separator: " ")
+            // `from:mail ` / `@mail ` / `is:phone ` becomes a token once a space follows it.
+            let settled = { (term: String?) in term.map { $0 != words.last || q.last?.isWhitespace == true } ?? false }
+            let namedApp = settled(named?.term) ? named?.app : nil
+            let type = settled(typed) ? typed.flatMap(Self.contactType).flatMap(ContactFilter.init) : nil
+            if namedApp != nil || type != nil {
+                if let namedApp { source = namedApp }
+                if let type { contactToken = type }
+                query = words.filter { !(namedApp != nil && $0 == named?.term) && !(type != nil && Self.contactType(in: $0) != nil) }
+                    .joined(separator: " ")
             }
         }
     }
@@ -244,15 +345,18 @@ final class PanelModel {
         return name.isEmpty ? nil : String(name)
     }
 
-    /// Turns the suggested app into the token and drops its term from the query.
+    /// Turns the suggestion into its token and drops its terms from the query.
     @discardableResult
     func acceptSuggestion() -> Bool {
         guard let s = suggestion else { return false }
         var terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        terms.removeAll { $0 == s.term }
+        terms.removeAll { s.terms.contains($0) }
         suggestion = nil
         suggestionSelected = false
-        source = s.app
+        switch s {
+        case .app(let a): source = a.app
+        case .contact(let type, _, _): contactToken = type
+        }
         query = terms.joined(separator: " ")
         return true
     }

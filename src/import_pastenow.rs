@@ -203,14 +203,36 @@ fn import_lists(
         let pk: i64 = row.get(0)?;
         let list_type: i64 = row.get(2)?;
         let filter: Option<Vec<u8>> = row.get(3)?;
-        let name = row
+        let mut name = row
             .get::<_, Option<String>>(1)?
             .unwrap_or_else(|| format!("PasteNow list {pk}"));
-        let existing = store.list_by_name(&name)?;
         let rule = match list_type {
+            // PasteNow's pin list fills the built-in one.
+            0 if name == "📌"
+                || ["pinned", "pins"]
+                    .iter()
+                    .any(|n| name.trim().eq_ignore_ascii_case(n)) =>
+            {
+                name = PINNED_LIST.to_owned();
+                None
+            }
             0 => None,
             1 => match filter.as_deref().map(translate_filter) {
-                Some(Ok(rule)) => Some(rule),
+                Some(Ok(rule)) => match only_kind(&rule) {
+                    Some(kind) => {
+                        let chip = match kind {
+                            Kind::Text => "Text",
+                            Kind::Url => "Links",
+                            Kind::Image => "Images",
+                            Kind::File => "Files",
+                        };
+                        report
+                            .lists_skipped
+                            .push((name, format!("same as the built-in {chip} filter")));
+                        continue;
+                    }
+                    None => Some(rule),
+                },
                 Some(Err(reason)) => {
                     report.lists_skipped.push((name, reason));
                     continue;
@@ -229,7 +251,7 @@ fn import_lists(
                 continue;
             }
         };
-        match existing {
+        match store.list_by_name(&name)? {
             Some(list) if list.rule != rule => {
                 report
                     .lists_skipped
@@ -255,6 +277,15 @@ fn import_lists(
         }
     }
     Ok(())
+}
+
+/// The kind of a rule that only filters by one kind, which a type chip already does.
+fn only_kind(rule: &Rule) -> Option<Kind> {
+    match rule {
+        Rule::Kind { kind } => Some(*kind),
+        Rule::All { rules } | Rule::Any { rules } if rules.len() == 1 => only_kind(&rules[0]),
+        _ => None,
+    }
 }
 
 fn read_bounded(reader: impl Read) -> std::io::Result<Vec<u8>> {
@@ -533,7 +564,7 @@ mod tests {
              INSERT INTO ZAPPLICATION VALUES (1, 'com.apple.Safari', 'Safari'), \
                (2, 'com.agilebits.onepassword7', '1Password');
              INSERT INTO ZEXCLUDERULE VALUES (1, 2, 1);
-             INSERT INTO ZPASTELIST VALUES (1, -1, -1, NULL, NULL), (2, 0, 1, 'Pinned', NULL), \
+             INSERT INTO ZPASTELIST VALUES (1, -1, -1, NULL, NULL), (2, 0, 1, '📌', NULL), \
                (3, 1, 2, 'Images', \
                 CAST('{\"composeType\":1,\"predicateTypes\":[{\"uniformType\":\"public.image\"}],\"ruleName\":\"Images\"}' AS BLOB)), \
                (4, 1, 3, 'Today', \
@@ -576,8 +607,14 @@ mod tests {
         assert_eq!((report.imported, report.duplicates), (2, 0));
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].0, 3);
-        assert_eq!(report.lists_created, 3);
-        assert!(report.lists_skipped.is_empty());
+        assert_eq!(report.lists_created, 2);
+        assert_eq!(
+            report.lists_skipped,
+            [(
+                "Images".to_owned(),
+                "same as the built-in Images filter".to_owned()
+            )]
+        );
         assert_eq!(report.excludes, 1);
 
         let recent = store.recent(10).unwrap();
@@ -596,7 +633,7 @@ mod tests {
         let image_item = store.get(image.id).unwrap().unwrap();
         assert_eq!(image_item.reps, [Rep::new("public.png", PNG.to_vec())]);
 
-        let pinned = store.list_by_name("Pinned").unwrap().unwrap();
+        let pinned = store.list_by_name(PINNED_LIST).unwrap().unwrap();
         let members: Vec<i64> = store
             .list_items(&pinned, 10, 0)
             .unwrap()
@@ -604,8 +641,6 @@ mod tests {
             .map(|i| i.id)
             .collect();
         assert_eq!(members, [text.id]);
-        let images = store.list_by_name("Images").unwrap().unwrap();
-        assert_eq!(images.rule, Some(Rule::Kind { kind: Kind::Image }));
         assert_eq!(store.excludes().unwrap(), ["com.agilebits.onepassword7"]);
         let today = store.list_by_name("Today").unwrap().unwrap();
         let copied_today = |now| store.list_items(&today, 10, now).unwrap();
@@ -621,7 +656,7 @@ mod tests {
         assert_eq!((again.imported, again.duplicates), (0, 2));
         assert_eq!(again.lists_created, 0);
         assert_eq!(store.recent(10).unwrap(), recent);
-        assert_eq!(store.lists().unwrap().len(), 3);
+        assert_eq!(store.lists().unwrap().len(), 2);
         assert_eq!(store.list_items(&pinned, 10, 0).unwrap().len(), 1);
     }
 }

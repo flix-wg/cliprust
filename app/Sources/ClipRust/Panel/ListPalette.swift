@@ -19,7 +19,7 @@ struct ListPalette: Equatable {
 }
 
 enum PaletteRow: Hashable {
-    case filter(ItemFilter), app(SourceApp), create(String), save(String)
+    case filter(ItemFilter), contact(ContactFilter), app(SourceApp), create(String), save(String)
 }
 
 extension ItemFilter {
@@ -75,10 +75,15 @@ extension PanelModel {
             return true
         }
         let typed = query.trimmingCharacters(in: .whitespaces)
-        let text = mode == .saveSearch ? (typed.isEmpty ? source?.title ?? "" : typed) : ""
+        let text = mode == .saveSearch ? (typed.isEmpty ? contactToken?.title ?? source?.title ?? "" : typed) : ""
         if mode == .saveSearch, text.isEmpty { return false }
         palette = ListPalette(mode: mode, text: text)
-        if mode == .go { Task { await app.refreshApps() } }
+        if mode == .go {
+            Task {
+                await app.refreshApps()
+                _ = await loadContactCounts()
+            }
+        }
         return true
     }
 
@@ -88,8 +93,11 @@ extension PanelModel {
         switch palette.mode {
         case .go:
             let lists = ranked(filters(), text) { [$0.title] }
+            let counted = [ContactFilter.phone, .email, .address].filter { (contactCounts?[$0] ?? 0) > 0 }
+            let contacts = ranked(counted, text) { [$0.title] + $0.words }
             let apps = ranked(app.apps, text) { [$0.title, String($0.bundleId.split(separator: ".").last ?? "")] }
-            return lists.map(PaletteRow.filter) + apps.map(PaletteRow.app) + creatable(lists, text)
+            return lists.map(PaletteRow.filter) + contacts.map(PaletteRow.contact) + apps.map(PaletteRow.app)
+                + creatable(lists, text)
         case .add:
             let manual = app.orderedLists.filter { $0.manual && $0.name != Item.idsList }.map { ItemFilter.list($0.name) }
             let lists = ranked(manual, text) { [$0.title] }
@@ -118,14 +126,18 @@ extension PanelModel {
             query = ""
             filter = .all
             source = a
+        case (.contact(let type), _):
+            query = ""
+            if filter != .contacts { filter = .all }
+            contactToken = type
         case (.create(let name), _):
             Task { if await app.createList(name) { filter = .list(name) } else { NSSound.beep() } }
         case (.save(let name), _):
-            let (q, kind, token, contacts) = (query, filter.kind, source, filter == .contacts)
+            let (q, kind, token, type, contacts) = (query, filter.kind, source, contactToken, filter == .contacts)
             Task {
                 // The same terms, `is:` type and pending `from:` app the search uses.
                 var terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
-                let contact = terms.compactMap(Self.contactType).last ?? (contacts ? "any" : nil)
+                let contact = terms.compactMap(Self.contactType).last ?? type?.rawValue ?? (contacts ? "any" : nil)
                 terms.removeAll { Self.contactType(in: $0) != nil }
                 var bundle = token?.bundleId
                 if bundle == nil, let core = app.core, let named = await Self.namedApp(in: terms, core: core) {
@@ -185,6 +197,8 @@ struct ListPaletteView: View {
         let rows = model.paletteRows
         let selection = model.palette?.selection ?? 0
         let firstApp = rows.firstIndex { if case .app = $0 { true } else { false } }
+        let firstContact = rows.firstIndex { if case .contact = $0 { true } else { false } }
+        let headers = [firstContact, firstApp].compactMap { $0 }.filter { $0 < 8 }.count
         VStack(spacing: 0) {
             TextField(model.palette?.placeholder ?? "", text: Binding(get: { model.palette?.text ?? "" },
                                                                      set: { model.palette?.text = $0 }))
@@ -199,8 +213,8 @@ struct ListPaletteView: View {
                     ScrollView {
                         VStack(spacing: 1) {
                             ForEach(Array(rows.enumerated()), id: \.element) { i, row in
-                                if i == firstApp {
-                                    Text("Apps")
+                                if i == firstApp || i == firstContact {
+                                    Text(i == firstApp ? "Apps" : "Contacts")
                                         .font(.system(size: 11, weight: .semibold))
                                         .foregroundStyle(.secondary)
                                         .padding(.horizontal, 8)
@@ -217,7 +231,7 @@ struct ListPaletteView: View {
                         .padding(5)
                     }
                     .frame(height: CGFloat(min(rows.count, 8)) * (Self.rowHeight + 1) + 9
-                        + (firstApp.map { $0 < 8 ? Self.headerHeight + 1 : 0 } ?? 0))
+                        + CGFloat(headers) * (Self.headerHeight + 1))
                     .onChange(of: selection) { _, i in proxy.scrollTo(i) }
                 }
             }
@@ -235,6 +249,7 @@ struct ListPaletteView: View {
 
     private func hint(_ row: PaletteRow) -> String? {
         if case .app(let a) = row { return "\(a.count)" }
+        if case .contact(let type) = row { return model.contactCounts?[type].map(PanelModel.countText) }
         guard model.palette?.mode == .go, case .filter(let f) = row,
               let i = model.filters().firstIndex(of: f), i < 9 else { return nil }
         return "⌃\(i + 1)"
@@ -280,6 +295,7 @@ private struct PaletteRowView: View {
     private var symbol: String {
         switch row {
         case .filter(let f): smart ? "line.3.horizontal.decrease" : f.symbol
+        case .contact(let type): type.symbol
         case .app: "app"
         case .create: "plus"
         case .save: "line.3.horizontal.decrease"
@@ -289,6 +305,7 @@ private struct PaletteRowView: View {
     private var title: String {
         switch row {
         case .filter(let f): f.title
+        case .contact(let type): type.title
         case .app(let a): a.title
         case .create(let name): if case .add = mode { "Create “\(name)” and add" } else { "Create list “\(name)”" }
         case .save(let name): "Save search as “\(name)”"
