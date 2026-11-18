@@ -1,0 +1,49 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please don't paste real clipboard contents, API keys or personal data. Replace them with example values.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Copy …
+        2. Open the panel with ⇧⌘V
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: ClipRust version
+      description: Get Info on ClipRust.app in Finder, or `cliprust --version` for the CLI.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: macOS 26.1, MacBook Air M2
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options:
+        - App
+        - CLI
+        - Both
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      render: text
