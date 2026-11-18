@@ -115,8 +115,9 @@ jobs:
             echo "No CHANGELOG.md section for $VERSION" >&2
             exit 1
           fi
-          if [ "$SIGNING" != "true" ]; then
-            printf '\nThis build is not signed with a Developer ID. See "Install" in the README for how to open it.\n' >> "$RUNNER_TEMP/notes.md"
+          # Gatekeeper blocks a downloaded app that is signed but not notarized, too.
+          if [ "$NOTARIZING" != "true" ]; then
+            printf '\nThis build is not notarized by Apple. See "Install" in the README for how to open it the first time.\n' >> "$RUNNER_TEMP/notes.md"
           fi
 
       - name: Create the GitHub release
