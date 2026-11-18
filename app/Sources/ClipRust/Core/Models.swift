@@ -61,7 +61,9 @@ extension Item {
         case "phone":
             let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.phoneNumber.rawValue)
             let number = detector?.firstMatch(in: text, range: range)?.phoneNumber ?? ""
-            let dial = number.filter { $0.isNumber || $0 == "+" }
+            // In "+49 (0)30 …" the bracketed trunk zero is not dialled.
+            let intl = number.replacingOccurrences(of: #"^(\+\d{1,3})\s*\(0\)"#, with: "$1", options: .regularExpression)
+            let dial = intl.filter { $0.isNumber || $0 == "+" }
             return dial.isEmpty ? nil : URL(string: "tel:\(dial)")
         case "email":
             let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -124,7 +126,7 @@ struct ClipList: Codable, Identifiable, Hashable, Sendable {
 
 struct CoreSettings: Codable, Equatable, Sendable {
     var paused = false
-    var detectKeys = false
+    var detectKeys = true
     var maxItems: Int? = 5000
     var maxAgeDays: Int?
 

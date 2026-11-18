@@ -25,6 +25,8 @@ const SUMMARY_SQL: &str = "SELECT p.id, p.kind, p.title, substr(p.text, 1, 200),
      p.source_url, p.source_domain, p.secret_kind, p.secret_provider, p.note, \
      p.created_at, p.last_used_at, p.byte_size, p.contact \
      FROM paste_items p LEFT JOIN applications a ON a.id = p.app_id";
+/// Merges the index so a replaced text's tokens are rewritten too.
+const OPTIMIZE_FTS: &str = "INSERT INTO paste_items_fts (paste_items_fts) VALUES ('optimize')";
 /// Items in a manual list are kept by retention and `prune`.
 const UNLISTED: &str = "p.id NOT IN (SELECT item_id FROM paste_list_items)";
 
@@ -129,7 +131,91 @@ impl Store {
     fn init(conn: Connection) -> Result<Self> {
         schema::configure(&conn)?;
         schema::migrate(&conn)?;
-        Ok(Self { conn })
+        let mut store = Self { conn };
+        store.scan_keys_once()?;
+        Ok(store)
+    }
+
+    /// History stored before key detection was on by default is scanned once.
+    fn scan_keys_once(&mut self) -> Result<()> {
+        let done = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM settings WHERE key = 'keys_scanned'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !done {
+            if self.settings()?.detect_keys {
+                self.rescan_keys()?;
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('keys_scanned', '1')",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Runs key detection over text and URL clips not yet filed as a key or
+    /// ID, masking and filing what it finds as `ingest` does. Items keep their
+    /// place in history. Returns the number of items upgraded.
+    pub fn rescan_keys(&mut self) -> Result<usize> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        type Row = (
+            i64,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<Row> = tx
+            .prepare(
+                "SELECT p.id, p.kind, p.last_used_at, p.source_url, p.source_title, a.bundle_id, a.name \
+                 FROM paste_items p LEFT JOIN applications a ON a.id = p.app_id \
+                 WHERE p.kind IN ('text', 'url') AND p.secret_kind IS NULL",
+            )?
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut found = 0;
+        for (id, kind, last_used_at, source_url, source_title, bundle_id, name) in rows {
+            let Some(kind) = Kind::parse(&kind) else {
+                continue;
+            };
+            let mut cap = Capture {
+                kind,
+                base_uniform_type: String::new(),
+                reps: load_reps(&tx, id)?,
+                app: bundle_id.map(|bundle_id| AppInfo {
+                    bundle_id,
+                    name,
+                    path: None,
+                }),
+                source_url,
+                source_title,
+                secret: None,
+            };
+            secrets::annotate(&mut cap, || None);
+            if let Some(secret) = &cap.secret {
+                let domain = cap.source_url.as_deref().and_then(secrets::domain);
+                if apply_secret(&tx, id, None, secret, domain.as_deref(), last_used_at)? {
+                    found += 1;
+                }
+            }
+        }
+        if found > 0 {
+            tx.execute(OPTIMIZE_FTS, [])?;
+        }
+        tx.commit()?;
+        Ok(found)
     }
 
     /// Stores a capture. A copy whose checksum is already known updates that
@@ -167,34 +253,11 @@ impl Store {
                 tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
                 insert_reps(&tx, id, &cap.reps)?;
             }
-            // A key found in a clip filed as an ID replaces the ID.
             let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
-            let upgrade = |s: &&crate::Secret| match old_kind {
-                None => true,
-                Some(old) => old == SecretKind::Id && s.kind == SecretKind::Key,
-            };
-            if let Some(secret) = cap.secret.as_ref().filter(upgrade) {
-                tx.execute(
-                    "UPDATE paste_items SET text = ?1, \
-                     title = CASE WHEN secret_kind = 'id' THEN ?2 ELSE coalesce(title, ?2) END, \
-                     secret_provider = ?3, secret_kind = ?4, source_domain = coalesce(?5, source_domain), \
-                     contact = NULL \
-                     WHERE id = ?6",
-                    params![secret.masked, secret.name, secret.provider, secret.kind.as_str(), domain, id],
-                )?;
-                if old_kind.is_some() {
-                    tx.execute(
-                        "DELETE FROM paste_list_items WHERE item_id = ?1 \
-                         AND list_id = (SELECT id FROM paste_lists WHERE name = ?2)",
-                        params![id, IDS_LIST],
-                    )?;
-                }
-                file_secret(&tx, id, secret.kind, now)?;
-                // Merge the index so the unmasked text's tokens are rewritten too.
-                tx.execute(
-                    "INSERT INTO paste_items_fts (paste_items_fts) VALUES ('optimize')",
-                    [],
-                )?;
+            if let Some(secret) = &cap.secret
+                && apply_secret(&tx, id, old_kind, secret, domain.as_deref(), now)?
+            {
+                tx.execute(OPTIMIZE_FTS, [])?;
             }
             Ingest::Duplicate(id)
         } else {
@@ -383,24 +446,7 @@ impl Store {
         let Some(summary) = self.summary(id)? else {
             return Ok(None);
         };
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT format, payload, raw_size FROM paste_item_data WHERE item_id = ?1 ORDER BY position")?;
-        let rows = stmt.query_map([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })?;
-        let mut reps = Vec::new();
-        for row in rows {
-            let (format, payload, raw_size) = row?;
-            reps.push(Rep {
-                format,
-                data: zstd::bulk::decompress(&payload, raw_size as usize)?,
-            });
-        }
+        let reps = load_reps(&self.conn, id)?;
         Ok(Some(Item { summary, reps }))
     }
 
@@ -688,12 +734,17 @@ impl Store {
             .unwrap_or_default())
     }
 
-    pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+    /// Saves settings; turning key detection on scans the stored history.
+    pub fn save_settings(&mut self, settings: &Settings) -> Result<()> {
+        let was_on = self.settings()?.detect_keys;
         self.conn.execute(
             "INSERT INTO settings (key, value) VALUES ('settings', ?1) \
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [serde_json::to_string(settings)?],
         )?;
+        if settings.detect_keys && !was_on {
+            self.rescan_keys()?;
+        }
         Ok(())
     }
 
@@ -816,6 +867,72 @@ fn insert_reps(conn: &Connection, item_id: i64, reps: &[Rep]) -> Result<()> {
         ])?;
     }
     Ok(())
+}
+
+fn load_reps(conn: &Connection, item_id: i64) -> Result<Vec<Rep>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT format, payload, raw_size FROM paste_item_data WHERE item_id = ?1 ORDER BY position",
+    )?;
+    let rows = stmt.query_map([item_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut reps = Vec::new();
+    for row in rows {
+        let (format, payload, raw_size) = row?;
+        reps.push(Rep {
+            format,
+            data: zstd::bulk::decompress(&payload, raw_size as usize)?,
+        });
+    }
+    Ok(reps)
+}
+
+/// Masks a newly detected secret into item `id` and files it; a key found in
+/// an item filed as an ID replaces the ID. Returns whether the item changed,
+/// after which the caller runs [`OPTIMIZE_FTS`].
+fn apply_secret(
+    conn: &Connection,
+    id: i64,
+    old_kind: Option<SecretKind>,
+    secret: &crate::Secret,
+    domain: Option<&str>,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let upgrade = match old_kind {
+        None => true,
+        Some(old) => old == SecretKind::Id && secret.kind == SecretKind::Key,
+    };
+    if !upgrade {
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE paste_items SET text = ?1, \
+         title = CASE WHEN secret_kind = 'id' THEN ?2 ELSE coalesce(title, ?2) END, \
+         secret_provider = ?3, secret_kind = ?4, source_domain = coalesce(?5, source_domain), \
+         contact = NULL \
+         WHERE id = ?6",
+        params![
+            secret.masked,
+            secret.name,
+            secret.provider,
+            secret.kind.as_str(),
+            domain,
+            id
+        ],
+    )?;
+    if old_kind.is_some() {
+        conn.execute(
+            "DELETE FROM paste_list_items WHERE item_id = ?1 \
+             AND list_id = (SELECT id FROM paste_lists WHERE name = ?2)",
+            params![id, IDS_LIST],
+        )?;
+    }
+    file_secret(conn, id, secret.kind, now)?;
+    Ok(true)
 }
 
 fn file_secret(
@@ -998,6 +1115,19 @@ mod tests {
         assert!(s.search("Rq5Po4", 10).unwrap().is_empty());
         let keys = s.list_by_name(KEYS_LIST).unwrap().unwrap();
         assert_eq!(ids(s.list_items(&keys, 10, 50).unwrap()), [plain]);
+
+        // Stored while detection was off; a rescan masks it in place.
+        let older = add(&mut s, "ghp_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2", None, 35);
+        assert_eq!(ids(s.search("Hh8Ii9", 10).unwrap()), [older]);
+        assert_eq!(s.rescan_keys().unwrap(), 1);
+        let item = s.summary(older).unwrap().unwrap();
+        assert_eq!(
+            (item.secret_kind, item.last_used_at),
+            (Some(SecretKind::Key), 35)
+        );
+        assert!(!item.preview.unwrap().contains("Hh8Ii9"));
+        assert!(s.search("Hh8Ii9", 10).unwrap().is_empty());
+        assert_eq!(s.rescan_keys().unwrap(), 0);
     }
 
     #[test]

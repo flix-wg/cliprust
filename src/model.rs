@@ -224,7 +224,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             paused: false,
-            detect_keys: false,
+            detect_keys: true,
             max_items: Some(5000),
             max_age_days: None,
         }

@@ -126,6 +126,8 @@ enum Cmd {
         change: Option<SettingsCmd>,
     },
     Stats,
+    /// Look for keys in clips stored while key detection was off
+    Rescan,
     /// Copy history, lists and exclusions from PasteNow (quit PasteNow first)
     #[cfg(feature = "pastenow-import")]
     ImportPastenow {
@@ -368,6 +370,7 @@ fn run(cli: Cli) -> CliResult {
             store.save_settings(&settings)?;
             println!("{}", serde_json::to_string_pretty(&settings)?);
         }
+        Cmd::Rescan => println!("{} keys found", store.rescan_keys()?),
         Cmd::Stats => {
             let s = store.stats()?;
             println!("items          {}", s.items);

@@ -109,7 +109,7 @@ pub fn detect(text: &str) -> Vec<Contact> {
         let before = &text[..m.start()];
         let after = text[m.end()..].chars().next();
         !matches!(after, Some(':' | '/' | '@'))
-            && (before.ends_with("mailto:") || !before.ends_with([':', '/', '@']))
+            && (before.ends_with("mailto:") || !before.ends_with([':', '/', '@', '=', '?', '&']))
     }) {
         found.push(Contact::Email);
     }
@@ -190,6 +190,7 @@ mod tests {
             ("$1,299.00", &[]),
             ("https://user:pass@example.com/x", &[]),
             ("git@github.com:flix-wg/cliprust.git", &[]),
+            ("https://host/?user=alice@example.com", &[]),
             ("let s = \"string 12, 1234 items\";", &[]),
             ("Meet at 12 Main St tomorrow", &[]),
         ];
