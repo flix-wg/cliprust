@@ -117,6 +117,16 @@ struct SourceApp: Codable, Hashable, Identifiable, Sendable {
     var title: String { name ?? AppInfo.name(bundleId) }
 }
 
+/// A search as the core reads it: the plain words, the app a `from:` word named, the last `is:` type.
+struct ParsedQuery: Decodable, Sendable {
+    var text: String
+    var app: SourceApp?
+    var appTerm: String?
+    /// `phone`, `email`, `address` or `any`.
+    var contact: String?
+    var contactTerms: [String]
+}
+
 struct ClipList: Codable, Identifiable, Hashable, Sendable {
     let name: String
     var sort: String?

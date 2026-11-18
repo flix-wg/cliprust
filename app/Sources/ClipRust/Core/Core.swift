@@ -1,7 +1,9 @@
 import CCliprust
 import Foundation
 
-struct CoreError: LocalizedError {
+/// An `err` from the core. `code` is `not_found`, `invalid`, `locked`, `io` or `internal`.
+struct CoreError: LocalizedError, Decodable {
+    var code = "internal"
     let message: String
     var errorDescription: String? { message }
 }
@@ -11,6 +13,9 @@ final class Core: @unchecked Sendable {
     private let handle: OpaquePointer
     private let queue: DispatchQueue
     private var onEvent: (@MainActor (CoreEvent) -> Void)?
+
+    /// The Rust crate's version.
+    static let version = String(cString: cr_version())
 
     static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -47,7 +52,7 @@ final class Core: @unchecked Sendable {
         }
         defer { cr_free_string(out) }
         let envelope = try Self.decoder.decode(Envelope<T>.self, from: Data(bytesNoCopy: out, count: strlen(out), deallocator: .none))
-        if let err = envelope.err { throw CoreError(message: err) }
+        if let err = envelope.err { throw err }
         guard let ok = envelope.ok else { throw CoreError(message: "Malformed response.") }
         return ok
     }
@@ -58,6 +63,11 @@ final class Core: @unchecked Sendable {
                 cont.resume(with: Result { try self.send(method, params) })
             }
         }
+    }
+
+    /// Blocks the caller until the core answers; only for the panel's first frame.
+    func callNow<T: Decodable>(_ method: String, _ params: [String: Any] = [:], as type: T.Type = T.self) throws -> T {
+        try queue.sync { try send(method, params) }
     }
 
     func run(_ method: String, _ params: [String: Any] = [:]) async throws {
@@ -95,14 +105,14 @@ final class Core: @unchecked Sendable {
         init(from decoder: Decoder) throws {}
     }
 
-    /// `{"ok": T}` or `{"err": "..."}`; `ok` may be JSON null, which only an optional or `Ignored` accepts.
+    /// `{"ok": T}` or `{"err": {"code", "message"}}`; `ok` may be JSON null, which only an optional or `Ignored` accepts.
     private struct Envelope<T: Decodable>: Decodable {
         let ok: T?
-        let err: String?
+        let err: CoreError?
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
-            err = try c.decodeIfPresent(String.self, forKey: .err)
+            err = try c.decodeIfPresent(CoreError.self, forKey: .err)
             ok = err == nil ? try c.decode(T.self, forKey: .ok) : nil
         }
 
@@ -111,16 +121,32 @@ final class Core: @unchecked Sendable {
 }
 
 extension Core {
-    /// `contact` is `phone`, `email`, `address` or `any`.
+    /// `query` is in the core's search grammar (`from:mail`, `is:phone`, plain words); `app` (a bundle id)
+    /// overrides its `from:` word and its `is:` word overrides `contact` (`phone`, `email`, `address` or `any`).
     func items(query: String? = nil, kind: ItemKind? = nil, list: String? = nil, app: String? = nil, contact: String? = nil,
                limit: Int) async throws -> [Item] {
+        try await call("items", Self.itemsParams(query, kind, list, app, contact, limit))
+    }
+
+    /// `items` on the calling thread.
+    func itemsNow(kind: ItemKind? = nil, list: String? = nil, contact: String? = nil, limit: Int) throws -> [Item] {
+        try callNow("items", Self.itemsParams(nil, kind, list, nil, contact, limit))
+    }
+
+    private static func itemsParams(_ query: String?, _ kind: ItemKind?, _ list: String?, _ app: String?, _ contact: String?,
+                                    _ limit: Int) -> [String: Any] {
         var p: [String: Any] = ["limit": limit]
         if let contact { p["contact"] = contact }
         if let query, !query.isEmpty { p["query"] = query }
         if let kind { p["kind"] = kind.rawValue }
         if let list { p["list"] = list }
         if let app { p["app"] = app }
-        return try await call("items", p)
+        return p
+    }
+
+    /// How the core reads a search; with `app` set, `from:` words stay text.
+    func parseQuery(_ query: String, app: String?) async throws -> ParsedQuery {
+        try await call("parse_query", app.map { ["query": query, "app": $0] } ?? ["query": query])
     }
 
     /// Apps of stored items, most copied first; a query keeps the matching ones, best first.
@@ -145,6 +171,7 @@ extension Core {
     func contactCounts() async throws -> [String: Int] { try await call("counts") }
     /// Differs from an earlier value once any process committed a change.
     func dataVersion() async throws -> [Int] { try await call("data_version") }
+    func dataVersionNow() throws -> [Int] { try callNow("data_version") }
     /// Folds the WAL back without waiting for other connections.
     func checkpoint() async { try? await run("checkpoint") }
     func lists() async throws -> [ClipList] { try await call("lists") }
