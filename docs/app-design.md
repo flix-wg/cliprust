@@ -55,7 +55,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - **URL:** the URL plus its host
 - **Preview footer:** source app · copied time · times used · formats · size, and an editable note field ("Add a note…").
 - **Inline edit:** ⌘N (note) or ⌘R (title) opens a field under the selected row, prefilled and focused. ⏎ saves, Esc cancels, saving it empty removes the note or title. Selecting another row cancels it. Works for keys and IDs, whose note labels them ("prod Cloudflare, DNS edit") and is searchable.
-- **Opening:** the panel shows the page already in memory and reloads only if the core changed since; the search is reset and the page reloaded when it hides, and a stored clip reloads it in the background.
+- **Opening:** the panel keeps the page already in memory unless the core changed since (`data_version`), the filter changed or it is a smart list. Then it reloads the first page synchronously before the panel is drawn (a millisecond or two), so the first frame is current. The search is reset and the page reloaded when it hides, and a stored clip reloads a visible panel in the background.
 - **Empty states:** a single centred line in secondary colour, such as "Nothing copied yet" or "No matches for "foo"".
 
 **Keyboard in the panel:**
@@ -149,25 +149,38 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
 ## Architecture
 
 ```
+src/                            Rust core, CLI and C ABI
+  lib.rs                        public API, Error, default database path
+  main.rs                       the `cliprust` CLI
+  model.rs                      Capture, Item, ItemSummary, Settings
+  schema.rs                     SQLite schema and migrations
+  store/                        the Store, one file per responsibility
+    mod.rs                      open, data_version, checkpoint, stats
+    items.rs                    ingest, single items, edits, deletion, retention
+    reps.rs                     reading and writing payloads (compression; the place for encryption)
+    search.rs                   find, apps, contact counts
+    lists.rs                    manual and smart lists
+    secrets.rs                  detected keys and IDs, rescans
+    settings.rs                 settings and excluded apps
+  query.rs                      the search grammar shared by the panel and the CLI
+  rules.rs                      smart-list rules compiled to SQL
+  secrets.rs, contacts.rs       key, ID and contact detection
+  capture.rs, monitor.rs, platform.rs   pasteboard reading/writing and the watch loop
+  import_pastenow.rs            PasteNow import
+  ffi/mod.rs                    C ABI, error codes, watcher events
+  ffi/methods.rs                the cr_call methods
 app/
   Package.swift                 SwiftPM, macOS 26, executable target ClipRust, C target CCliprust
   Sources/CCliprust/            cliprust.h + module.modulemap (links ../../target/release/libcliprust.a)
   Sources/ClipRust/
     ClipRustApp.swift           @main; AppDelegate; LSUIElement; owns Core, StatusItem, PanelController
-    Core/Core.swift             FFI wrapper: a serial background queue; async methods; event stream
-    Core/Models.swift           Codable mirrors of the Rust JSON
-    MenuBar/StatusItem.swift    NSStatusItem, icon drawing, menu
-    Panel/PanelController.swift NSPanel subclass, show/hide/position, key handling
-    Panel/PanelView.swift       search + chips + list + preview (SwiftUI)
-    Panel/ItemRow.swift
-    Panel/PreviewPane.swift
-    Keys/KeysView.swift         Keys & IDs window
-    Settings/SettingsView.swift
-    System/Hotkey.swift         Shortcut + Carbon RegisterEventHotKey wrapper
-    System/PanelShortcuts.swift panel actions and their editable shortcuts
-    System/ShortcutRecorder.swift recorder view for both
-    System/Paster.swift         Accessibility check/prompt, CGEvent ⌘V to the previous app
-    System/Prefs.swift          @AppStorage keys and defaults
+    Core/                       Core (FFI wrapper on a serial queue), AppState, Codable models
+    MenuBar/                    NSStatusItem, icon drawing, menu
+    Panel/                      NSPanel, search + chips + list + preview, list palette, Quick Look
+    Keys/                       Keys & IDs window
+    Settings/                   Settings window
+    System/                     hotkey, panel shortcuts, recorder, paster, prefs, thumbnails, Touch ID gate
+    Preview/                    sample data and renderers for screenshots and the app icon (dev aids)
   scripts/build-app.sh          cargo build --release --features ffi → swift build -c release
                                 → assemble ClipRust.app (Info.plist, icon) → codesign
                                 with the "Apple Development" identity (stable, so TCC grants survive rebuilds)
@@ -177,7 +190,17 @@ app/
 - The Swift language mode is 5, with strict concurrency off.
 - UI state lives on `@MainActor` `@Observable` models.
 
-### FFI contract (Rust `src/ffi.rs`, `crate-type = ["lib", "staticlib"]`, feature `ffi`)
+### Search grammar (`src/query.rs`)
+
+The core reads every search; the app and `cliprust search` accept the same syntax.
+
+- Plain words must each occur in the text, title or note (substring, case-insensitive).
+- `from:mail` or `@mail` keeps clips copied from the best stored app whose name, a word of it or a bundle-id component starts with "mail". Only the first six words are read as apps. A word that names no stored app is searched as text. An explicit `app` (the panel's app token) turns this off.
+- `is:phone`, `is:email`, `is:address`, or `is:contact` for any of them, keeps clips recognised as that contact type. All `is:` words leave the text; the last one wins and overrides an explicit `contact`.
+
+Swift only draws the result: `parse_query` tells it which word named an app and which words were `is:` words, and those become capsules once a space follows them. The suggestion rows ("Copied from Mail", "Phone numbers") are app UI and stay in Swift.
+
+### FFI contract (`src/ffi/`, `crate-type = ["lib", "staticlib"]`, feature `ffi`)
 
 A small C ABI carries JSON requests and responses, so Swift decodes them with `Codable` and no code generation is needed.
 
@@ -185,50 +208,59 @@ A small C ABI carries JSON requests and responses, so Swift decodes them with `C
 typedef struct CrHandle CrHandle;
 typedef void (*cr_event_cb)(const char *event_json, void *ctx);
 
-CrHandle *cr_open(const char *db_path /* NULL = default */, char **err_out);
-char     *cr_call(CrHandle *h, const char *request_json);   // always returns JSON, caller frees
-int       cr_item_data(CrHandle *h, int64_t id, const char *format, uint8_t **out, size_t *len); // 0 = ok; "image" = first image format
-void      cr_watch(CrHandle *h, cr_event_cb cb, void *ctx); // starts the watcher thread once
-void      cr_free_string(char *s);
-void      cr_free_bytes(uint8_t *p, size_t len);
-void      cr_close(CrHandle *h);
+CrHandle   *cr_open(const char *db_path /* NULL = default */, char **err_out);
+char       *cr_call(const CrHandle *h, const char *request_json); // always returns JSON, caller frees
+int32_t     cr_item_data(const CrHandle *h, int64_t id, const char *format, uint8_t **out, size_t *len);
+void        cr_watch(const CrHandle *h, cr_event_cb cb, void *ctx); // starts the watcher thread once
+void        cr_own_change(intptr_t count); // the app wrote pasteboard change `count`; the watcher skips it
+const char *cr_version(void);              // crate version, static
+void        cr_free_string(char *s);
+void        cr_free_bytes(uint8_t *p, size_t len);
+void        cr_close(CrHandle *h);
 ```
 
 **Requests and responses.**
-- A request has the form `{"method": "...", "params": {...}}`.
-- The response is `{"ok": <value>}` on success and `{"err": "message"}` on failure.
-- Any Rust panic is caught at the boundary and returned as `err`.
+- A request has the form `{"method": "...", "params": {...}}`; `params` may be left out when a method takes none. Rust parses it into one enum variant per method.
+- The response is `{"ok": <value>}` on success and `{"err": {"code": "...", "message": "..."}}` on failure.
+- Error codes: `not_found` (no such item or list), `invalid` (a malformed request, an unknown method, or one the store refuses, such as a duplicate list name), `locked` (reserved for when the encryption key is unavailable), `io` (database or pasteboard failure), `internal` (a bug; any Rust panic is caught at the boundary and returned with this code).
+- `cr_item_data` returns 0 with the bytes, 1 when the format is absent and 2 on error or for a masked key. `format` is one of `item.formats`, or `"image"` for the first image format.
 
-**Methods** (the params mirror the existing store API):
+**Methods:**
 
 | Method | Params / returns |
 | --- | --- |
-| `items` | `{query?, kind?, list?, app?, limit}` → `[ItemSummary]`; every given filter applies (`app` is a bundle id) |
+| `items` | `{query?, kind?, list?, app?, contact?, limit}` → `[ItemSummary]`; every given filter applies. `query` is in the search grammar, `app` is a bundle id, `contact` is `phone`, `email`, `address` or `any` |
+| `parse_query` | `{query, app?}` → `{text, app?: {bundle_id, name?, count}, app_term?, contact?, contact_terms}`, how `items` reads the query |
 | `item` | `{id}` → summary plus `formats: [String]`, full `text?`, `note?`; only the text format is decompressed |
 | `apps` | `{query?}` → `[{bundle_id, name?, count}]`, apps of stored items, most copied first; a query matches a prefix of the name, a word of it or a bundle-id component |
-| `paste_prep` | `{id, plain}` writes every representation to the pasteboard (or plain text only) and touches the item |
+| `counts` | → `{phone, email, address, any}`, items per contact type |
+| `data_version` | → an opaque value that changes once any process commits a change; the panel compares it before reloading |
+| `checkpoint` | folds the WAL back without waiting for other connections (sent when the panel hides) |
+| `paste_prep` | `{id, plain}` writes every representation to the pasteboard (or plain text only) and touches the item; `invalid` for a key |
 | `delete` | `{id}` |
 | `set_title` | `{id, title?}` |
 | `set_note` | `{id, note?}` |
 | `lists` | `[{name, rule?, sort, manual}]` |
 | `list_ids` | `{name}` → ids of the items in a manual list |
 | `create_list` | `{name, rule?}` |
+| `rename_list` | `{name, new_name}` |
 | `delete_list` | `{name}` |
 | `add_to_list` | `{name, id}` |
 | `remove_from_list` | `{name, id}` |
 | `secrets` | `{kind?, provider?, domain?, limit}` → `[ItemSummary]` (keys and IDs) |
 | `secret_facets` | `{kind?}` → `{providers: [{name, count}], domains: [{name, count}]}` |
 | `reveal_key` | `{id}` → full value (Swift gates it behind LocalAuthentication) |
-| `settings` / `save_settings` | `Settings` |
-| `excludes` / `add_exclude` / `remove_exclude` | the ignored apps |
-| `stats` | |
-| `clear` | |
+| `settings` / `save_settings` | `Settings`; saving applies retention |
+| `excludes` / `add_exclude` / `remove_exclude` | the ignored apps, `{bundle_id}` |
+| `stats` | → `{items, raw_bytes, stored_bytes, file_bytes, path}` |
+| `clear` | → number of deleted items |
 | `import_pastenow` | `{path?}` → counts |
 
 **Details:**
-- **Events:** `{"type": "stored", "id": 12}` · `{"type": "skipped", "reason": "..."}` · `{"type": "failed", "error": "..."}`. Swift refreshes the visible page on `stored`.
+- **Events:** `{"type": "stored", "id": 12, "new": true, "kind": "text", "secret": false, "secret_kind": null}` · `{"type": "skipped", "reason": "..."}` · `{"type": "failed", "error": "..."}`. Swift refreshes the visible page on `stored`.
+- **Own changes:** after writing the pasteboard itself (a revealed key), the app calls `cr_own_change` with the new change count so the watcher does not store it again.
 - **Connections:** the handle holds `Mutex<Store>` for calls, and the watcher thread opens its own `Store` connection (WAL).
-- **Main thread:** Swift never calls the FFI there. `Core` hops to a serial `DispatchQueue` and back.
+- **Main thread:** `Core` hops to a serial `DispatchQueue` and back. The one exception is opening the panel, which reads `data_version` and, if needed, the first page synchronously so the first frame is current.
 
 ### Paste flow
 
