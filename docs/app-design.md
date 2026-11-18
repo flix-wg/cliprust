@@ -157,7 +157,10 @@ src/                            Rust core, CLI and C ABI
   store/                        the Store, one file per responsibility
     mod.rs                      open, data_version, checkpoint, stats
     items.rs                    ingest, single items, edits, deletion, retention
-    reps.rs                     reading and writing payloads (compression; the place for encryption)
+    reps.rs                     reading and writing payloads (compression and sealing)
+    keys.rs                     sealing key items, the locked state, rotation, recovery codes
+    file.rs                     plaintext or SQLCipher file, switching modes, replaced-file check
+  crypto.rs                     master keys (Keychain), HKDF subkeys, XChaCha20-Poly1305
     search.rs                   find, apps, contact counts
     lists.rs                    manual and smart lists
     secrets.rs                  detected keys and IDs, rescans
@@ -222,7 +225,7 @@ void        cr_close(CrHandle *h);
 **Requests and responses.**
 - A request has the form `{"method": "...", "params": {...}}`; `params` may be left out when a method takes none. Rust parses it into one enum variant per method.
 - The response is `{"ok": <value>}` on success and `{"err": {"code": "...", "message": "..."}}` on failure.
-- Error codes: `not_found` (no such item or list), `invalid` (a malformed request, an unknown method, or one the store refuses, such as a duplicate list name), `locked` (reserved for when the encryption key is unavailable), `io` (database or pasteboard failure), `internal` (a bug; any Rust panic is caught at the boundary and returned with this code).
+- Error codes: `not_found` (no such item or list), `invalid` (a malformed request, an unknown method, or one the store refuses, such as a duplicate list name), `locked` (the master key is missing from, or refused by, the Keychain), `io` (database or pasteboard failure), `internal` (a bug; any Rust panic is caught at the boundary and returned with this code).
 - `cr_item_data` returns 0 with the bytes, 1 when the format is absent and 2 on error or for a masked key. `format` is one of `item.formats`, or `"image"` for the first image format.
 
 **Methods:**
@@ -255,12 +258,18 @@ void        cr_close(CrHandle *h);
 | `stats` | → `{items, raw_bytes, stored_bytes, file_bytes, path}` |
 | `clear` | → number of deleted items |
 | `import_pastenow` | `{path?}` → counts |
+| `encryption_status` | → `{keys, generation?, message?, pending, unreadable, db_encrypted, db_encryption_available}`; `keys` is `ready`, `no_key`, `locked`, `unavailable` or `unsupported` |
+| `set_db_encryption` | `{on}` encrypts the database file with SQLCipher or decrypts it → status; `invalid` while another process has the file open |
+| `rotate_key` | → the new key generation; re-seals every key and re-keys an encrypted file |
+| `recovery_code` | → the master key as `cliprust-key-<gen>-<hex>` (Swift gates it behind LocalAuthentication) |
+| `restore_key` | `{code}` puts the key back after checking it belongs to this database → its generation |
+| `forget_unreadable_keys` | deletes the key items whose key is missing → number deleted; only then can a new key be created |
 
 **Details:**
-- **Events:** `{"type": "stored", "id": 12, "new": true, "kind": "text", "secret": false, "secret_kind": null}` · `{"type": "skipped", "reason": "..."}` · `{"type": "failed", "error": "..."}`. Swift refreshes the visible page on `stored`.
+- **Events:** `{"type": "stored", "id": 12, "new": true, "kind": "text", "secret": false, "secret_kind": null}` · `{"type": "skipped", "reason": "..."}` · `{"type": "secret_skipped", "reason": "..."}` (a copied key was not stored because its key is unavailable; it is still on the clipboard) · `{"type": "failed", "error": "..."}`. Swift refreshes the visible page on `stored`.
 - **Own changes:** after writing the pasteboard itself (a revealed key), the app calls `cr_own_change` with the new change count so the watcher does not store it again.
-- **Connections:** the handle holds `Mutex<Store>` for calls, and the watcher thread opens its own `Store` connection (WAL).
-- **Main thread:** `Core` hops to a serial `DispatchQueue` and back. The one exception is opening the panel, which reads `data_version` and, if needed, the first page synchronously so the first frame is current.
+- **Connections:** the handle holds one `Arc<Mutex<Store>>` that calls and the watcher thread share, so the app has a single connection; switching database encryption needs it to be the only one.
+- **Main thread:** `Core` hops to a serial `DispatchQueue` and back. The one exception is opening the panel, which waits up to 30 ms for `data_version` and, if needed, the first page so the first frame is current; when the queue is busy it shows the page it has and reloads right after.
 
 ### Paste flow
 

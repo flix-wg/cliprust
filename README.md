@@ -78,6 +78,8 @@ Run `cliprust --help` for the full list.
 
 History lives in `~/Library/Application Support/cliprust/cliprust.db`; the CLI reads another file if you set `CLIPRUST_DB`. Settings live in the `app.cliprust.ClipRust` defaults domain.
 
+Detected API keys are stored encrypted with a key kept in your login keychain (service `app.cliprust`), and the whole database file can be encrypted too (`cliprust encryption on`, macOS only).
+
 ClipRust makes no network connections and collects no telemetry. Nothing leaves your Mac. When key detection is on, it asks the browser in front for the current page's address (Automation permission) so you can tell keys apart later; that address is stored only in the local database.
 
 ## Uninstall
@@ -91,6 +93,8 @@ ClipRust makes no network connections and collects no telemetry. Nothing leaves 
    defaults delete app.cliprust.ClipRust
    tccutil reset Accessibility app.cliprust.ClipRust
    tccutil reset AppleEvents app.cliprust.ClipRust
+   # the key that encrypts stored API keys (repeat until none is left)
+   security delete-generic-password -s app.cliprust
    ```
 
 3. Remove the CLI with `cargo uninstall cliprust`, or delete the `cliprust` binary you copied onto your `PATH`.
@@ -138,3 +142,34 @@ docs/       Design notes and roadmap
 - [docs/roadmap.md](docs/roadmap.md): planned features and add-ons
 
 ClipRust is released under the [MIT License](LICENSE).
+
+## Third-party notices
+
+The macOS build includes [SQLCipher](https://www.zetetic.net/sqlcipher/) (community edition), which is distributed under this licence:
+
+```text
+Copyright (c) 2025, ZETETIC LLC
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of the ZETETIC LLC nor the
+      names of its contributors may be used to endorse or promote products
+      derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY ZETETIC LLC ''AS IS'' AND ANY
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL ZETETIC LLC BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

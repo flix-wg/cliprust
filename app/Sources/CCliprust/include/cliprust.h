@@ -29,6 +29,7 @@ void cr_own_change(intptr_t count);
 /* The crate version, e.g. "0.1.0"; static, never freed. */
 const char *cr_version(void);
 
+/* Overwrites the string (it may hold a revealed key) before freeing it. */
 void cr_free_string(char *s);
 void cr_free_bytes(uint8_t *p, size_t len);
 

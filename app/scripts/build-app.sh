@@ -15,11 +15,21 @@ OUT="$APP_DIR/build/ClipRust.app"
 
 echo "==> Rust core"
 export MACOSX_DEPLOYMENT_TARGET=26.0
+# SQLCipher uses CommonCrypto unless an OpenSSL location is set (also as
+# <TARGET>_OPENSSL_*); then it would link Homebrew's libcrypto dynamically.
+for var in $(env | sed -n 's/^\([A-Za-z0-9_]*OPENSSL_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$var"
+done
 (cd "$ROOT" && cargo build --release --features ffi --lib)
 
 echo "==> Swift app"
 (cd "$APP_DIR" && swift build -c release --product ClipRust)
 BIN="$(cd "$APP_DIR" && swift build -c release --show-bin-path)/ClipRust"
+if otool -L "$BIN" | grep -Eiq 'libcrypto|libssl|openssl'; then
+    echo "error: the app links OpenSSL; SQLCipher must use CommonCrypto" >&2
+    otool -L "$BIN" >&2
+    exit 1
+fi
 
 echo "==> Bundle"
 rm -rf "$OUT"
@@ -59,13 +69,26 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> Sign"
+# The hardened runtime blocks casual debugging; Apple Events stay allowed for
+# the browser page lookup (osascript runs on the app's behalf).
+ENTITLEMENTS="$APP_DIR/build/ClipRust.entitlements"
+cat > "$ENTITLEMENTS" <<ENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>
+ENT
+SIGN=(--force --options runtime --entitlements "$ENTITLEMENTS")
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\"" \
-    && codesign --force --timestamp=none --sign "$IDENTITY" "$OUT" 2>"$APP_DIR/build/codesign.log"; then
+    && codesign "${SIGN[@]}" --timestamp=none --sign "$IDENTITY" "$OUT" 2>"$APP_DIR/build/codesign.log"; then
     echo "Signed with $IDENTITY"
 else
     echo "warning: signing with \"$IDENTITY\" failed; using an ad-hoc signature." >&2
     echo "warning: Accessibility permission will have to be granted again after each rebuild." >&2
-    codesign --force --sign - "$OUT"
+    codesign "${SIGN[@]}" --sign - "$OUT"
 fi
 codesign --verify --strict "$OUT"
 echo "Built $OUT"
