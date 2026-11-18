@@ -7,22 +7,30 @@
 //! - `lists`: manual and smart lists
 //! - `secrets`: detected keys and IDs
 //! - `settings`: settings and excluded apps
+//! - `keys`: sealing key items, the locked state, rotation and recovery
+//! - `file`: plaintext or SQLCipher file, switching, replaced-file checks
 
+mod file;
 mod items;
+mod keys;
 mod lists;
 mod reps;
 mod search;
 mod secrets;
 mod settings;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::{Connection, Row, params_from_iter, types::Value};
 
+use crate::crypto::{self, KeySource};
 use crate::model::{ItemSummary, Kind, SecretKind};
-use crate::{Result, contacts, schema};
+use crate::{Error, Result, contacts, schema};
 
+pub use file::is_encrypted;
 pub use items::Ingest;
+pub use keys::{EncryptionStatus, KeyState};
 pub use lists::{IDS_LIST, KEYS_LIST, PINNED_LIST, PasteList};
 pub use search::{AppCount, Find};
 pub use secrets::{Facet, Facets, SecretFilter};
@@ -44,6 +52,12 @@ pub struct Stats {
 
 pub struct Store {
     conn: Connection,
+    keys: keys::Keyring,
+    path: Option<PathBuf>,
+    /// `(dev, ino)` of the file when it was opened.
+    file_id: Option<(u64, u64)>,
+    /// The generation whose `db` key opened an encrypted file.
+    db_gen: Option<u32>,
 }
 
 impl Drop for Store {
@@ -56,23 +70,75 @@ impl Drop for Store {
 }
 
 impl Store {
+    /// Opens (creating if needed) the database, with the platform's key store.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_keys(path, crypto::default_keys())
+    }
+
+    /// Opens with `keys` holding the master keys; `None` stores keys unsealed.
+    pub fn open_with_keys(path: &Path, keys: Option<Arc<dyn KeySource>>) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Self::init(Connection::open(path)?)
+        let keys = keys::Keyring::new(keys);
+        let (conn, db_gen, file_id) = {
+            let _lock = file::OpenLock::shared(path)?;
+            let (conn, db_gen) = file::connect(path, &keys)?;
+            schema::configure(&conn)?;
+            (conn, db_gen, file::id(path))
+        };
+        Self::init(conn, keys, Some(path.to_owned()), file_id, db_gen)
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        let keys = keys::Keyring::new(crypto::default_keys());
+        let conn = Connection::open_in_memory()?;
+        schema::configure(&conn)?;
+        Self::init(conn, keys, None, None, None)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
-        schema::configure(&conn)?;
+    fn init(
+        conn: Connection,
+        keys: keys::Keyring,
+        path: Option<PathBuf>,
+        file_id: Option<(u64, u64)>,
+        db_gen: Option<u32>,
+    ) -> Result<Self> {
         schema::migrate(&conn)?;
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            keys,
+            path,
+            file_id,
+            db_gen,
+        };
         store.scan_keys_once()?;
         Ok(store)
+    }
+
+    /// Restores a key from a recovery code into `keys`, also for an encrypted
+    /// file that no stored key opens. Returns the key's generation.
+    pub fn restore_key_at(
+        path: &Path,
+        keys: Option<Arc<dyn KeySource>>,
+        code: &str,
+    ) -> Result<u32> {
+        match Self::open_with_keys(path, keys.clone()) {
+            Ok(mut store) => store.restore_key(code),
+            Err(Error::Locked(_)) if is_encrypted(path)? => {
+                let source = keys.ok_or_else(|| Error::Locked(keys::NO_KEY_STORE.into()))?;
+                let (generation, master) = crypto::parse_recovery_code(code)
+                    .ok_or_else(|| Error::Refused("that is not a ClipRust recovery code".into()))?;
+                if !file::opens_with(path, &master)? {
+                    return Err(Error::Refused(
+                        "this recovery code does not open this database".into(),
+                    ));
+                }
+                keys::add_or_confirm(source.as_ref(), generation, &master)?;
+                Ok(generation)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Changes whenever this or any other connection commits a change.

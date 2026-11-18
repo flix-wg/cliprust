@@ -9,7 +9,7 @@ use crate::model::Kind;
 
 /// Case-insensitive (ASCII) substring test on text, title and note; binds
 /// the needle three times.
-pub(crate) const CONTAINS_SQL: &str = "(instr(lower(coalesce(p.text, '')), lower(?)) > 0 \
+pub(crate) const CONTAINS_SQL: &str = "(instr(lower(coalesce(CASE WHEN p.secret_kind = 'key' THEN NULL ELSE p.text END, '')), lower(?)) > 0 \
      OR instr(lower(coalesce(p.title, '')), lower(?)) > 0 \
      OR instr(lower(coalesce(p.note, '')), lower(?)) > 0)";
 

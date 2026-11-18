@@ -2,7 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, types::Value};
 
-use super::reps::{insert_reps, load_reps};
+use super::keys::{needs_seal, seal_item};
+use super::reps::{insert_reps, load_reps, wipe};
 use super::secrets::{apply_secret, file_secret};
 use super::{OPTIMIZE_FTS, SUMMARY_SQL, Store};
 use crate::Result;
@@ -33,13 +34,31 @@ impl Store {
     /// Stores a capture. A copy whose checksum is already known updates that
     /// item instead: a newer copy brings its formats and moves it to the top,
     /// and a newly detected key is masked and filed in the Keys list.
+    ///
+    /// A key is stored sealed with the master key and a keyed checksum. When
+    /// that key is unavailable the key is not stored at all and this returns
+    /// [`crate::Error::Locked`]; only without any key store (Linux) is it
+    /// stored unsealed, as before.
     pub fn ingest(&mut self, cap: &Capture, now: i64) -> Result<Ingest> {
-        let checksum = cap.checksum() as i64;
+        let plain_checksum = cap.checksum() as i64;
+        let is_key = cap
+            .secret
+            .as_ref()
+            .is_some_and(|s| s.kind == SecretKind::Key);
+        let keys = &self.keys;
         // Take the write lock up front so a concurrent writer cannot void
         // this transaction's snapshot between the lookup and the write.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sealer = if is_key { keys.sealer(&tx)? } else { None };
+        let checksum = match &sealer {
+            Some((_, k)) => k.checksum(
+                cap.kind.as_str(),
+                cap.reps.first().map_or(&[][..], |r| &r.data),
+            ),
+            None => plain_checksum,
+        };
         let app_id = cap
             .app
             .as_ref()
@@ -47,10 +66,12 @@ impl Store {
             .transpose()?;
         let byte_size: i64 = cap.reps.iter().map(|r| r.data.len() as i64).sum();
         let domain = cap.source_url.as_deref().and_then(secrets::domain);
+        // A copy stored before it was recognised as a key has the plain checksum.
         let existing: Option<(i64, i64, Option<String>)> = tx
             .query_row(
-                "SELECT id, last_used_at, secret_kind FROM paste_items WHERE checksum = ?1",
-                [checksum],
+                "SELECT id, last_used_at, secret_kind FROM paste_items WHERE checksum IN (?1, ?2) \
+                 ORDER BY checksum = ?1 DESC LIMIT 1",
+                [checksum, plain_checksum],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
@@ -63,10 +84,12 @@ impl Store {
                     params![now, app_id, cap.source_url, cap.source_title, domain, byte_size, id],
                 )?;
                 // Most re-copies bring the same formats; rewriting them costs pages of WAL.
-                if load_reps(&tx, id)? != cap.reps {
+                let mut old = load_reps(&tx, keys, id)?;
+                if old != cap.reps {
                     tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
-                    insert_reps(&tx, id, &cap.reps)?;
+                    insert_reps(&tx, id, &cap.reps, sealer.as_ref())?;
                 }
+                wipe(&mut old);
             }
             let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
             if let Some(secret) = &cap.secret
@@ -74,6 +97,10 @@ impl Store {
             {
                 tx.execute(OPTIMIZE_FTS, [])?;
             }
+            let id = match &sealer {
+                Some(s) if needs_seal(&tx, id, checksum, s.0)? => seal_item(&tx, keys, id, s)?,
+                _ => id,
+            };
             Ingest::Duplicate(id)
         } else {
             let contact = match (&cap.secret, cap.kind) {
@@ -119,7 +146,7 @@ impl Store {
                 ],
             )?;
             let id = tx.last_insert_rowid();
-            insert_reps(&tx, id, &cap.reps)?;
+            insert_reps(&tx, id, &cap.reps, sealer.as_ref())?;
             if let Some(secret) = &cap.secret {
                 file_secret(&tx, id, secret.kind, now)?;
             }
@@ -138,7 +165,7 @@ impl Store {
         let Some(summary) = self.summary(id)? else {
             return Ok(None);
         };
-        let reps = load_reps(&self.conn, id)?;
+        let reps = load_reps(&self.conn, &self.keys, id)?;
         Ok(Some(Item { summary, reps }))
     }
 

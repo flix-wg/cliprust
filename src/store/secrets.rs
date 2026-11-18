@@ -134,7 +134,7 @@ impl Store {
             let mut cap = Capture {
                 kind,
                 base_uniform_type: String::new(),
-                reps: load_reps(&tx, id)?,
+                reps: load_reps(&tx, &self.keys, id)?,
                 app: bundle_id.map(|bundle_id| AppInfo {
                     bundle_id,
                     name,
@@ -264,7 +264,7 @@ mod tests {
         let id = s.ingest(&styled("<b>same words</b>"), 10).unwrap().id();
         s.ingest(&styled("<i>same words</i>"), 20).unwrap();
         s.ingest(&styled("<u>same words</u>"), 5).unwrap();
-        let reps = s.get(id).unwrap().unwrap().reps;
+        let reps = s.get(id).unwrap().unwrap().reps.clone();
         assert_eq!(reps[1].data, b"<i>same words</i>");
         assert_eq!(s.recent(1).unwrap()[0].last_used_at, 20);
 

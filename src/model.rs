@@ -209,6 +209,17 @@ impl Item {
     }
 }
 
+impl Drop for Item {
+    /// A key's decrypted value is overwritten before its memory is freed.
+    fn drop(&mut self) {
+        if self.summary.secret_kind == Some(SecretKind::Key) {
+            for rep in &mut self.reps {
+                zeroize::Zeroize::zeroize(&mut rep.data);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {

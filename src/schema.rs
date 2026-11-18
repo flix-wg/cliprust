@@ -78,7 +78,7 @@ PRAGMA user_version = 1;
 ";
 
 /// Adds key/ID kinds, source domains and notes, and indexes notes.
-const V2: &str = r"
+pub(crate) const V2: &str = r"
 ALTER TABLE paste_items ADD COLUMN secret_kind TEXT;
 ALTER TABLE paste_items ADD COLUMN source_domain TEXT;
 ALTER TABLE paste_items ADD COLUMN note TEXT;
@@ -110,11 +110,45 @@ PRAGMA user_version = 2;
 ";
 
 /// Tags phone numbers, emails and addresses; `migrate` backfills them.
-const V3: &str = r"
+pub(crate) const V3: &str = r"
 ALTER TABLE paste_items ADD COLUMN contact TEXT;
 CREATE INDEX paste_items_contact ON paste_items (contact) WHERE contact IS NOT NULL;
 PRAGMA user_version = 3;
 ";
+
+/// Encrypted key payloads (`key_gen`, NULL while plaintext) and an index that
+/// never holds a key's text, not even masked: FTS reads a view instead.
+const V4: &str = r"
+ALTER TABLE paste_item_data ADD COLUMN key_gen INTEGER;
+DROP TRIGGER paste_items_ai;
+DROP TRIGGER paste_items_ad;
+DROP TRIGGER paste_items_au;
+DROP TABLE paste_items_fts;
+CREATE VIEW paste_items_search AS
+    SELECT id, CASE WHEN secret_kind = 'key' THEN NULL ELSE text END AS text, title, note
+    FROM paste_items;
+CREATE VIRTUAL TABLE paste_items_fts USING fts5(
+    text, title, note, content='paste_items_search', content_rowid='id', tokenize='trigram'
+);
+CREATE TRIGGER paste_items_ai AFTER INSERT ON paste_items BEGIN
+    INSERT INTO paste_items_fts (rowid, text, title, note) VALUES (new.id,
+        CASE WHEN new.secret_kind = 'key' THEN NULL ELSE new.text END, new.title, new.note);
+END;
+CREATE TRIGGER paste_items_ad AFTER DELETE ON paste_items BEGIN
+    INSERT INTO paste_items_fts (paste_items_fts, rowid, text, title, note) VALUES ('delete', old.id,
+        CASE WHEN old.secret_kind = 'key' THEN NULL ELSE old.text END, old.title, old.note);
+END;
+CREATE TRIGGER paste_items_au AFTER UPDATE OF text, title, note, secret_kind ON paste_items BEGIN
+    INSERT INTO paste_items_fts (paste_items_fts, rowid, text, title, note) VALUES ('delete', old.id,
+        CASE WHEN old.secret_kind = 'key' THEN NULL ELSE old.text END, old.title, old.note);
+    INSERT INTO paste_items_fts (rowid, text, title, note) VALUES (new.id,
+        CASE WHEN new.secret_kind = 'key' THEN NULL ELSE new.text END, new.title, new.note);
+END;
+INSERT INTO paste_items_fts (paste_items_fts) VALUES ('rebuild');
+PRAGMA user_version = 4;
+";
+
+pub(crate) const VERSION: i64 = 4;
 
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     // Both persist in the file, so only a new one is written; setting them
@@ -156,7 +190,7 @@ pub(crate) fn checkpoint_passive(conn: &Connection) {
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version >= 3 {
+    if version >= VERSION {
         return Ok(());
     }
     // Another process may be migrating too; re-check under the write lock.
@@ -198,6 +232,9 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             }
         }
         drop(set);
+    }
+    if version < 4 {
+        tx.execute_batch(V4)?;
     }
     tx.commit()
 }
