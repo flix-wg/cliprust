@@ -98,6 +98,7 @@ enum Request {
         on: bool,
     },
     RotateKey {},
+    PruneKeys {},
     RecoveryCode {},
     RestoreKey {
         code: String,
@@ -268,6 +269,7 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
             json!(store.encryption_status()?)
         }
         Request::RotateKey {} => json!(store.rotate_key()?),
+        Request::PruneKeys {} => json!(store.prune_keys()?),
         Request::RecoveryCode {} => json!(store.recovery_code()?.as_str()),
         Request::RestoreKey { code } => {
             let generation = store.restore_key(&code)?;

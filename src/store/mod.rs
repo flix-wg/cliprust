@@ -64,7 +64,7 @@ impl Drop for Store {
     fn drop(&mut self) {
         // A reader leaves the WAL to the writers.
         if self.conn.total_changes() > 0 {
-            schema::checkpoint(&self.conn);
+            let _ = schema::checkpoint(&self.conn);
         }
     }
 }
@@ -83,6 +83,7 @@ impl Store {
         let keys = keys::Keyring::new(keys);
         let (conn, db_gen, file_id) = {
             let _lock = file::OpenLock::shared(path)?;
+            file::remove_stale_copy(path)?;
             let (conn, db_gen) = file::connect(path, &keys)?;
             schema::configure(&conn)?;
             (conn, db_gen, file::id(path))
@@ -113,6 +114,8 @@ impl Store {
             db_gen,
         };
         store.scan_keys_once()?;
+        // Busy now (another process writing) is fine: the next open retries.
+        let _ = store.resume_scrub();
         Ok(store)
     }
 

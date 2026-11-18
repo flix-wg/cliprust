@@ -58,6 +58,19 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Deletes the copy an interrupted switch left behind (in plaintext, when it
+/// was decrypting). Called with `<db>.lock` held, so no switch is running.
+pub(super) fn remove_stale_copy(db: &Path) -> Result<()> {
+    let tmp = with_suffix(db, ".tmp");
+    for stale in [with_suffix(&tmp, "-journal"), tmp] {
+        match std::fs::remove_file(stale) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// `(dev, ino)` of the file at `path`.
 pub(super) fn id(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
@@ -209,7 +222,7 @@ impl Store {
         let _lock = OpenLock::exclusive(&path)?;
         let tmp = with_suffix(&path, ".tmp");
         if let Err(e) = self.export(&path, &tmp, sealer) {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = remove_stale_copy(&path);
             // Back to shared locking and WAL on the unchanged file.
             self.conn.execute_batch("PRAGMA locking_mode = NORMAL")?;
             self.conn
@@ -218,16 +231,18 @@ impl Store {
             return Err(e);
         }
         // The old connection now points at the replaced file; open the new one.
-        self.reconnect(&path, false)
+        // Should that fail, the old one must not delete the new WAL by name,
+        // and the next call retries through `revalidate`.
+        if let Err(e) = self.reconnect(&path, false) {
+            keep_wal_on_close(&self.conn);
+            self.file_id = None;
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn export(&self, path: &Path, tmp: &Path, sealer: Option<&Sealer>) -> Result<()> {
-        for stale in [tmp.to_owned(), with_suffix(tmp, "-journal")] {
-            match std::fs::remove_file(stale) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
-        }
+        remove_stale_copy(path)?;
         let conn = &self.conn;
         // Leaving WAL mode needs the only connection; exclusive locking then
         // keeps everyone else out until this connection closes.
@@ -308,8 +323,11 @@ impl Store {
         }
         File::open(tmp)?.sync_all()?;
         std::fs::rename(tmp, path)?;
+        // The switch has happened; a failed directory sync only makes the
+        // rename less durable, so it must not send the caller down the
+        // path that keeps the old connection.
         if let Some(dir) = path.parent() {
-            File::open(dir)?.sync_all()?;
+            let _ = File::open(dir).and_then(|d| d.sync_all());
         }
         Ok(())
     }
@@ -363,8 +381,10 @@ mod tests {
         assert!(is_encrypted(&path).unwrap());
         assert!(!on_disk(&path, "quarterly budget"));
         assert_eq!(s.search("quarterly", 10).unwrap().len(), 1);
-        // Rotation re-keys the file too and retires the old key.
+        // Rotation re-keys the file too; pruning then retires the old key.
         let generation = s.rotate_key().unwrap();
+        assert_eq!(keys.generations().unwrap().len(), 2);
+        s.prune_keys().unwrap();
         assert_eq!(keys.generations().unwrap(), [generation]);
         assert!(is_encrypted(&path).unwrap());
         assert_eq!(s.get(key).unwrap().unwrap().text(), Some(VALUE));

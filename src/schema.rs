@@ -177,10 +177,14 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Folds the WAL into the main file and truncates it. Best effort: with the
 /// busy timeout off, another process's reader or writer just makes it skip.
-pub(crate) fn checkpoint(conn: &Connection) {
+/// Returns whether it completed, so everything committed is synced to the file.
+pub(crate) fn checkpoint(conn: &Connection) -> bool {
     let _ = conn.busy_timeout(std::time::Duration::ZERO);
-    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    let done = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    });
     let _ = conn.busy_timeout(BUSY_TIMEOUT);
+    matches!(done, Ok(0))
 }
 
 /// Copies what it can of the WAL back without waiting for or blocking anyone.

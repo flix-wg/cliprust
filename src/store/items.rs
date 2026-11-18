@@ -177,6 +177,7 @@ impl Store {
     }
 
     pub fn set_title(&self, id: i64, title: Option<&str>) -> Result<bool> {
+        let title = self.masked_label(id, title)?;
         Ok(self.conn.execute(
             "UPDATE paste_items SET title = ?1 WHERE id = ?2",
             params![title, id],
@@ -186,6 +187,7 @@ impl Store {
     /// Attaches a searchable comment to an item; `None` or blank removes it.
     pub fn set_note(&self, id: i64, note: Option<&str>) -> Result<bool> {
         let note = note.map(str::trim).filter(|n| !n.is_empty());
+        let note = self.masked_label(id, note)?;
         Ok(self.conn.execute(
             "UPDATE paste_items SET note = ?1 WHERE id = ?2",
             params![note, id],
@@ -250,7 +252,7 @@ impl Store {
             .query_row("PRAGMA incremental_vacuum", [], |_| Ok(()))
             .optional()?;
         // Deleted rows also linger in the WAL until it is checkpointed.
-        schema::checkpoint(&self.conn);
+        let _ = schema::checkpoint(&self.conn);
         Ok(())
     }
 }

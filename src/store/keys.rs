@@ -2,8 +2,13 @@
 //! first key, the locked state, sealing plaintext keys, rotation, recovery.
 //!
 //! Settings rows: `key_gen` (the generation that seals new keys),
-//! `key_check:<gen>` (tells a wrong key from corrupt data) and `key_old`
-//! (a generation a rotation still has to retire).
+//! `key_check:<gen>` (tells a wrong key from corrupt data; kept for older
+//! generations until `prune_keys`), `key_old` (a generation a rotation still
+//! has to move off) and `scrub_pending` (plaintext may linger in free pages
+//! or the WAL until a VACUUM and a full checkpoint succeed).
+//!
+//! Rotation never deletes a key from the key store: copies and backups of
+//! the database made before still need it. `prune_keys` does that on request.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,9 +18,10 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use super::Store;
 use super::reps::{insert_reps, load_reps, wipe};
+use super::{OPTIMIZE_FTS, Store};
 use crate::crypto::{self, KeyError, KeySource, Subkeys};
+use crate::model::{Rep, format};
 use crate::{Error, Result, schema};
 
 pub(super) const MISSING: &str = "ClipRust's key is missing from the Keychain";
@@ -251,6 +257,9 @@ impl Store {
                     }
                 }
             }
+            if sealed > 0 {
+                set_setting(&tx, SCRUB_PENDING, "1")?;
+            }
             tx.commit()?;
         }
         if sealed > 0 {
@@ -262,18 +271,24 @@ impl Store {
 
     /// Replaces the master key: adds a new generation, re-seals every key
     /// item in one transaction (rows carry their generation, so a crash
-    /// leaves a readable mix), re-keys an encrypted file, then deletes the
-    /// old key. Returns the new generation.
+    /// leaves a readable mix) and re-keys an encrypted file. The old key
+    /// stays in the key store for older copies; see [`Store::prune_keys`].
+    /// Returns the new generation.
     pub fn rotate_key(&mut self) -> Result<u32> {
+        // The re-sealed rows must reach the disk before anything relies on them.
+        self.conn.pragma_update(None, "synchronous", "FULL")?;
+        let rotated = self.rotate();
+        self.conn.pragma_update(None, "synchronous", "NORMAL")?;
+        rotated
+    }
+
+    fn rotate(&mut self) -> Result<u32> {
         if self.keys.source.is_none() {
             return Err(Error::Locked(NO_KEY_STORE.into()));
         }
         self.finish_rotation()?;
         if setting(&self.conn, "key_old")?.is_some() {
-            return Err(Error::Refused(
-                "the previous key rotation is not finished; quit other ClipRust processes and try again"
-                    .into(),
-            ));
+            return Err(Error::Refused(UNFINISHED.into()));
         }
         let keys = &self.keys;
         let tx = self
@@ -290,6 +305,9 @@ impl Store {
         )?;
         let sealer = keys.mint(&tx)?;
         set_setting(&tx, "key_old", &old.to_string())?;
+        if had_plain {
+            set_setting(&tx, SCRUB_PENDING, "1")?;
+        }
         let ids: Vec<i64> = tx
             .prepare(
                 "SELECT DISTINCT d.item_id FROM paste_item_data d \
@@ -307,10 +325,50 @@ impl Store {
         if had_plain {
             self.scrub()?;
         } else {
-            schema::checkpoint(&self.conn);
+            let _ = schema::checkpoint(&self.conn);
         }
         self.finish_rotation()?;
         Ok(sealer.0)
+    }
+
+    /// Deletes from the key store the older generations this database no
+    /// longer uses, once that is durable in the file. Copies and backups
+    /// made before then open only with their own recovery code. Returns the
+    /// generations deleted.
+    pub fn prune_keys(&mut self) -> Result<Vec<u32>> {
+        let source = self
+            .keys
+            .source
+            .clone()
+            .ok_or_else(|| Error::Locked(NO_KEY_STORE.into()))?;
+        self.finish_rotation()?;
+        if setting(&self.conn, "key_old")?.is_some() {
+            return Err(Error::Refused(UNFINISHED.into()));
+        }
+        if !schema::checkpoint(&self.conn) {
+            return Err(Error::Refused(
+                "the database is busy; quit other ClipRust processes and try again".into(),
+            ));
+        }
+        let current = current_gen(&self.conn)?;
+        let used = self.sealed_generations()?;
+        let known: Vec<u32> = self
+            .conn
+            .prepare("SELECT CAST(substr(key, 11) AS INTEGER) FROM settings WHERE key LIKE 'key_check:%'")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut pruned = Vec::new();
+        for g in known {
+            if Some(g) == current || Some(g) == self.db_gen || used.contains(&g) {
+                continue;
+            }
+            source.delete(g)?;
+            self.keys.forget(g);
+            self.conn
+                .execute("DELETE FROM settings WHERE key = ?1", [check_name(g)])?;
+            pruned.push(g);
+        }
+        Ok(pruned)
     }
 
     /// The current master key as a recovery code (the app gates this behind
@@ -392,7 +450,8 @@ impl Store {
         Ok(deleted)
     }
 
-    /// Retires the generation a rotation replaced, once nothing needs it.
+    /// Finishes moving off the generation a rotation replaced; the key itself
+    /// stays in the key store.
     fn finish_rotation(&mut self) -> Result<()> {
         let Some(old) = setting(&self.conn, "key_old")?.and_then(|v| v.parse::<u32>().ok()) else {
             return Ok(());
@@ -414,23 +473,59 @@ impl Store {
         if in_use || self.db_gen == Some(old) {
             return Ok(());
         }
-        if let Some(source) = &self.keys.source {
-            source.delete(old)?;
-        }
-        self.keys.forget(old);
-        self.conn.execute(
-            "DELETE FROM settings WHERE key IN ('key_old', ?1)",
-            [check_name(old)],
-        )?;
+        self.conn
+            .execute("DELETE FROM settings WHERE key = 'key_old'", [])?;
         Ok(())
     }
 
     /// Rewrites the file so replaced plaintext leaves no trace in free pages
-    /// or the WAL (`secure_delete` covers single deletes).
+    /// or the WAL (`secure_delete` covers single deletes). Stays pending,
+    /// and is retried on the next open, until the checkpoint completes.
     fn scrub(&self) -> Result<()> {
         self.conn.execute_batch("VACUUM")?;
-        schema::checkpoint(&self.conn);
+        if schema::checkpoint(&self.conn) {
+            self.conn
+                .execute("DELETE FROM settings WHERE key = ?1", [SCRUB_PENDING])?;
+        }
         Ok(())
+    }
+
+    /// Finishes a scrub that a crash or a busy checkpoint interrupted.
+    pub(super) fn resume_scrub(&self) -> Result<()> {
+        if setting(&self.conn, SCRUB_PENDING)?.is_some() {
+            self.scrub()?;
+        }
+        Ok(())
+    }
+
+    /// `value` with a key item's own value replaced by its masked form, so
+    /// a title or note never holds the key in plaintext (or in the index).
+    /// Unchanged while the key cannot be read.
+    pub(super) fn masked_label(&self, id: i64, value: Option<&str>) -> Result<Option<String>> {
+        let Some(value) = value else { return Ok(None) };
+        let masked: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT text FROM paste_items WHERE id = ?1 AND secret_kind = 'key'",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(masked) = masked else {
+            return Ok(Some(value.to_owned()));
+        };
+        let mut reps = match load_reps(&self.conn, &self.keys, id) {
+            Ok(reps) => reps,
+            Err(Error::Locked(_)) => return Ok(Some(value.to_owned())),
+            Err(e) => return Err(e),
+        };
+        let out = match key_text(&reps) {
+            Some(secret) => value.replace(secret, &masked),
+            None => value.to_owned(),
+        };
+        wipe(&mut reps);
+        Ok(Some(out))
     }
 
     fn sealed_generations(&self) -> Result<Vec<u32>> {
@@ -484,6 +579,15 @@ pub(super) fn seal_item(
         r.get(0)
     })?;
     let mut reps = load_reps(conn, keys, id)?;
+    if let Some(secret) = key_text(&reps)
+        && conn.execute(
+            "UPDATE paste_items SET title = replace(title, ?2, text), note = replace(note, ?2, text) \
+             WHERE id = ?1 AND (instr(title, ?2) > 0 OR instr(note, ?2) > 0)",
+            params![id, secret],
+        )? > 0
+    {
+        conn.execute(OPTIMIZE_FTS, [])?;
+    }
     let checksum = sealer
         .1
         .checksum(&kind, reps.first().map_or(&[][..], |r| &r.data));
@@ -543,6 +647,18 @@ pub(super) fn add_or_confirm(
         Err(e) => Err(e.into()),
     }
 }
+
+/// The plain-text value of a key item.
+fn key_text(reps: &[Rep]) -> Option<&str> {
+    reps.iter()
+        .find(|r| r.format == format::TEXT)
+        .and_then(|r| std::str::from_utf8(&r.data).ok())
+        .filter(|s| !s.is_empty())
+}
+
+const SCRUB_PENDING: &str = "scrub_pending";
+const UNFINISHED: &str =
+    "the previous key rotation is not finished; quit other ClipRust processes and try again";
 
 fn current_gen(conn: &Connection) -> Result<Option<u32>> {
     Ok(setting(conn, "key_gen")?.and_then(|v| v.parse().ok()))
@@ -658,9 +774,13 @@ pub(super) mod tests {
         let packed = zstd::bulk::compress(VALUE.as_bytes(), 3).unwrap();
         conn.execute(
             "INSERT INTO paste_items (kind, text, title, created_at, last_used_at, base_uniform_type, \
-             checksum, byte_size, secret_provider, secret_kind) VALUES \
-             ('text', 'sk-pro…2w', 'OPENAI_API_KEY', 1, 1, 't', ?1, ?2, 'OpenAI API key', 'key')",
-            rusqlite::params![key_capture(VALUE).checksum() as i64, VALUE.len() as i64],
+             checksum, byte_size, secret_provider, secret_kind, note) VALUES \
+             ('text', 'sk-pro…2w', 'OPENAI_API_KEY', 1, 1, 't', ?1, ?2, 'OpenAI API key', 'key', ?3)",
+            rusqlite::params![
+                key_capture(VALUE).checksum() as i64,
+                VALUE.len() as i64,
+                format!("staging {VALUE}")
+            ],
         )
         .unwrap();
         conn.execute(
@@ -677,6 +797,8 @@ pub(super) mod tests {
         assert_eq!(s.encryption_status().unwrap().pending, 1);
         assert_eq!(s.encrypt_pending().unwrap(), 1);
         assert_eq!(s.encryption_status().unwrap().pending, 0);
+        let note = s.summary(1).unwrap().unwrap().note;
+        assert_eq!(note.as_deref(), Some("staging sk-pro…2w"));
         drop(s);
         assert!(!on_disk(&path, VALUE));
 
@@ -699,6 +821,8 @@ pub(super) mod tests {
         let mut s = open();
         let id = s.ingest(&key_capture(VALUE), 1).unwrap().id();
         assert_eq!(s.rotate_key().unwrap(), 2);
+        assert_eq!(keys.generations().unwrap().len(), 2);
+        assert_eq!(s.prune_keys().unwrap(), [1]);
         assert_eq!(keys.generations().unwrap(), [2]);
         assert_eq!(s.get(id).unwrap().unwrap().text(), Some(VALUE));
         let code = s.recovery_code().unwrap();
