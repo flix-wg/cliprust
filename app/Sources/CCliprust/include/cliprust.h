@@ -4,13 +4,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* C ABI of the Rust core (src/ffi.rs). Requests and responses are JSON. */
+/* C ABI of the Rust core (src/ffi). Requests and responses are JSON. */
 
 typedef struct CrHandle CrHandle;
 typedef void (*cr_event_cb)(const char *event_json, void *ctx);
 
-/* NULL db_path means the default location shared with the CLI. */
+/* NULL db_path means the default location shared with the CLI. On failure *err_out is
+   {"code": ..., "message": ...}; code locked means cr_restore_key may help. */
 CrHandle *cr_open(const char *db_path, char **err_out);
+
+/* Puts a master key from a recovery code back into the Keychain, also while cr_open
+   fails on an encrypted database. Returns its generation, or -1 and sets *err_out as above. */
+int64_t cr_restore_key(const char *db_path, const char *code, char **err_out);
 void cr_close(CrHandle *h);
 
 /* {"method": ..., "params": {...}} -> {"ok": ...} or {"err": {"code": ..., "message": ...}};

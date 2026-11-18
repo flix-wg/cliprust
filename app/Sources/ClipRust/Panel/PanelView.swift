@@ -15,6 +15,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchBar
+            KeyNotices(app: model.app)
             FilterBar(model: model)
             Divider()
             GeometryReader { geo in
@@ -98,6 +99,58 @@ struct PanelView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 48)
+    }
+}
+
+/// Saved keys that no master key reads, or a copied key that was not saved.
+private struct KeyNotices: View {
+    let app: AppState
+    @State private var confirming = false
+    @State private var error: String?
+
+    var body: some View {
+        if let status = app.encryption, status.isLocked {
+            notice("lock.trianglebadge.exclamationmark", "Saved keys can’t be read",
+                   error ?? "\(status.message ?? "ClipRust’s key is missing from the Keychain"). \(keys(status.unreadable)) stay listed but can’t be pasted, and new keys aren’t saved. Restore the key with your recovery code in Settings › Security, or forget the unreadable keys.") {
+                if confirming {
+                    Button("Cancel") { confirming = false }
+                    Button("Delete \(keys(status.unreadable))", role: .destructive, action: forget)
+                } else {
+                    Button("Forget Unreadable Keys…") { confirming = true }
+                }
+            }
+        } else if let reason = app.skippedKey {
+            notice("key.slash", "A copied key wasn’t saved",
+                   "It stays on the clipboard but not in your history: \(reason).") {
+                Button("Dismiss") { app.skippedKey = nil }
+            }
+        }
+    }
+
+    private func keys(_ n: Int) -> String { n == 1 ? "1 key" : "\(n) keys" }
+
+    private func forget() {
+        confirming = false
+        Task {
+            do { _ = try await app.forgetUnreadableKeys(); error = nil } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func notice(_ symbol: String, _ title: String, _ text: String,
+                        @ViewBuilder actions: () -> some View) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) { actions() }.controlSize(.small)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 8))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 }
 

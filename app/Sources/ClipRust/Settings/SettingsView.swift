@@ -333,6 +333,207 @@ struct KeysPane: View {
     }
 }
 
+struct SecurityPane: View {
+    let app: AppState
+    @State private var busy = false
+    @State private var result: String?
+    @State private var confirm: Confirm?
+    @State private var recoveryCode: String?
+    @State private var restoreCode = ""
+
+    private enum Confirm: Identifiable {
+        case encrypt(Bool), rotate, prune, forget
+        var id: String { "\(self)" }
+    }
+
+    var body: some View {
+        Form {
+            if let status = app.encryption {
+                keysSection(status)
+                if status.dbEncryptionAvailable { databaseSection(status) }
+            } else {
+                Text("Loading…").foregroundStyle(.secondary)
+            }
+            if let result {
+                Section { Caption(result) }
+            }
+        }
+        .settingsPane()
+        .disabled(busy)
+        .task { await app.refreshEncryption() }
+        .onDisappear { recoveryCode = nil }
+        .confirmationDialog(title, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
+                            presenting: confirm) { c in
+            switch c {
+            case .encrypt(let on):
+                Button(on ? "Encrypt Database" : "Decrypt Database") {
+                    run { core in
+                        let s = try await core.setDbEncryption(on)
+                        return s.dbEncrypted ? "The database file is encrypted." : "The database file is stored unencrypted."
+                    }
+                }
+            case .rotate:
+                Button("Rotate Key") { run { "Saved keys now use key \(try await $0.rotateKey())." } }
+            case .prune:
+                Button("Remove Old Keys", role: .destructive) {
+                    run { core in
+                        let gone = try await core.pruneKeys()
+                        return gone.isEmpty ? "There were no old keys to remove." : "Removed \(gone.count) old key\(gone.count == 1 ? "" : "s") from the Keychain."
+                    }
+                }
+            case .forget:
+                Button("Delete Unreadable Keys", role: .destructive) {
+                    run { _ in "Deleted \(try await app.forgetUnreadableKeys()) unreadable keys." }
+                }
+            }
+        } message: { c in
+            switch c {
+            case .encrypt(true):
+                Text("ClipRust rewrites its database encrypted with a key kept in your Keychain. Copies made before, such as Time Machine backups and APFS snapshots, keep the old unencrypted data. Quit “cliprust watch” first.")
+            case .encrypt(false):
+                Text("ClipRust rewrites its database without encryption. Saved keys stay encrypted either way.")
+            case .rotate:
+                Text("Saved keys are encrypted again with a new key. The old key stays in the Keychain so older copies of the database still open, until you remove it.")
+            case .prune:
+                Text("Older copies and backups of the database, Time Machine included, then open only with the recovery code that was current when they were made.")
+            case .forget:
+                Text("Deletes the saved keys no key in the Keychain can read. This can’t be undone; restoring the key from its recovery code keeps them.")
+            }
+        }
+    }
+
+    private var title: String {
+        switch confirm {
+        case .encrypt(true): "Encrypt the whole database?"
+        case .encrypt(false): "Store the database unencrypted?"
+        case .rotate: "Rotate the encryption key?"
+        case .prune: "Remove old keys from the Keychain?"
+        case .forget: "Delete unreadable keys?"
+        case nil: ""
+        }
+    }
+
+    @ViewBuilder
+    private func keysSection(_ status: EncryptionStatus) -> some View {
+        Section {
+            LabeledContent("Saved keys") {
+                Text(Self.describe(status)).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+            }
+            if status.pending > 0 {
+                Caption("\(status.pending) saved key\(status.pending == 1 ? "" : "s") still wait to be encrypted.")
+            }
+            if status.keys != "unsupported" {
+                LabeledContent {
+                    Button("Rotate…") { confirm = .rotate }.disabled(status.keys != "ready")
+                } label: {
+                    Text("Encryption key")
+                    Text(status.generation.map { "Key \($0) in the login Keychain." } ?? "Created with the first saved key.")
+                }
+                LabeledContent {
+                    Button("Remove…") { confirm = .prune }.disabled(status.keys != "ready")
+                } label: {
+                    Text("Old keys")
+                    Text("Kept after a rotation so older copies of the database still open.")
+                }
+                recoverySection(status)
+            }
+            if status.unreadable > 0 {
+                LabeledContent {
+                    Button("Forget…", role: .destructive) { confirm = .forget }
+                } label: {
+                    Text("Unreadable keys")
+                    Text("\(status.unreadable) saved key\(status.unreadable == 1 ? "" : "s") can’t be read with the keys in the Keychain.")
+                }
+            }
+        } header: {
+            Text("Saved Keys")
+        } footer: {
+            Caption("Saved API keys are always encrypted. Keys copied before ClipRust encrypted them may survive in free disk space, APFS snapshots and Time Machine backups; FileVault protects those.")
+        }
+    }
+
+    @ViewBuilder
+    private func recoverySection(_ status: EncryptionStatus) -> some View {
+        LabeledContent {
+            if recoveryCode == nil {
+                Button("Show…", action: showRecoveryCode).disabled(status.keys != "ready")
+            } else {
+                HStack {
+                    Button("Copy") { recoveryCode.map(Clipboard.copySecret) }
+                    Button("Hide") { recoveryCode = nil }
+                }
+            }
+        } label: {
+            Text("Recovery code")
+            Text("Keep it in a password manager: it opens your saved keys on another Mac or after the Keychain item is lost.")
+        }
+        if let recoveryCode {
+            Text(recoveryCode).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+        }
+        LabeledContent {
+            HStack {
+                SecureField("Recovery code", text: $restoreCode).labelsHidden().frame(width: 180)
+                Button("Restore", action: restore).disabled(restoreCode.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        } label: {
+            Text("Restore key")
+        }
+    }
+
+    @ViewBuilder
+    private func databaseSection(_ status: EncryptionStatus) -> some View {
+        Section {
+            Toggle(isOn: Binding(get: { status.dbEncrypted }, set: { confirm = .encrypt($0) })) {
+                Text("Encrypt the whole database")
+                Text("Covers every clip, not only keys. Opening takes a few milliseconds longer.")
+            }
+            .disabled(status.keys == "locked" || status.keys == "unavailable")
+        } footer: {
+            Caption("Older backups and snapshots keep the data as it was when they were made.")
+        }
+    }
+
+    private static func describe(_ s: EncryptionStatus) -> String {
+        switch s.keys {
+        case "ready": "Encrypted"
+        case "no_key": "None saved yet"
+        case "unsupported": "Not encrypted on this system"
+        default: s.message.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "Unavailable"
+        }
+    }
+
+    private func showRecoveryCode() {
+        Task {
+            guard await KeyGate.authorize("show the recovery code", always: true) else { return }
+            run { core in
+                recoveryCode = try await core.recoveryCode()
+                return nil
+            }
+        }
+    }
+
+    private func restore() {
+        let code = restoreCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        run { core in
+            let generation = try await core.restoreKey(code)
+            restoreCode = ""
+            app.skippedKey = nil
+            return "Restored key \(generation)."
+        }
+    }
+
+    /// Runs one change at a time and reports its outcome or error under the form.
+    private func run(_ action: @escaping (Core) async throws -> String?) {
+        guard let core = app.core else { return }
+        busy = true
+        Task {
+            do { result = try await action(core) } catch { result = error.localizedDescription }
+            await app.refreshEncryption()
+            busy = false
+        }
+    }
+}
+
 struct ImportPane: View {
     let app: AppState
     @State private var importing = false

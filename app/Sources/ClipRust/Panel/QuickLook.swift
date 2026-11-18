@@ -5,6 +5,18 @@ import Quartz
 final class QuickLookSource: NSObject, QLPreviewPanelDataSource {
     var url: URL?
 
+    private static let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ClipRust Quick Look", isDirectory: true)
+
+    /// Deletes the copies written for Quick Look; the panel calls this when it closes.
+    static func removeFolder() {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    func clear() {
+        url = nil
+        Self.removeFolder()
+    }
+
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { url == nil ? 0 : 1 }
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url as NSURL? }
 
@@ -14,8 +26,8 @@ final class QuickLookSource: NSObject, QLPreviewPanelDataSource {
         let full: Item? = detail?.id == item.id ? detail : try? await core.item(item.id)
         guard let full else { return nil }
         if item.kind == .file { return full.fileURLs.first }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ClipRust Quick Look", isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
+        let dir = Self.folder
+        Self.removeFolder()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if item.kind == .image {
             let format = full.formats?.first { $0.hasPrefix("public.") } ?? "public.png"

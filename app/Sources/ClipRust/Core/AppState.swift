@@ -12,6 +12,9 @@ final class AppState {
     var hasContacts = false
     var excludes: [String] = []
     var stats: Stats?
+    var encryption: EncryptionStatus?
+    /// Why the last key copied was not saved; shown in the panel until dismissed.
+    var skippedKey: String?
     var pinnedLists = Prefs.pinnedLists { didSet { Prefs.pinnedLists = pinnedLists } }
     var listOrder = Prefs.listOrder { didSet { Prefs.listOrder = listOrder } }
 
@@ -37,6 +40,7 @@ final class AppState {
         settings = (try? await core.settings()) ?? settings
         lists = (try? await core.lists()) ?? lists
         excludes = (try? await core.excludes()) ?? excludes
+        await refreshEncryption()
         await refreshRecent()
         await refreshPins()
         await refreshApps()
@@ -47,6 +51,21 @@ final class AppState {
     func refreshContacts() async {
         guard let core, let found = try? await core.items(contact: "any", limit: 1) else { return }
         hasContacts = !found.isEmpty
+    }
+
+    func refreshEncryption() async {
+        guard let core else { return }
+        encryption = (try? await core.encryptionStatus()) ?? encryption
+    }
+
+    /// Deletes the keys no master key reads, after which new keys are saved again.
+    func forgetUnreadableKeys() async throws -> Int {
+        guard let core else { return 0 }
+        let n = try await core.forgetUnreadableKeys()
+        skippedKey = nil
+        await refreshEncryption()
+        await refreshRecent()
+        return n
     }
 
     func refreshApps() async {

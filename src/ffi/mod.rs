@@ -104,8 +104,24 @@ pub extern "C" fn cr_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
 }
 
+/// `p` as a path; NULL means the default location shared with the CLI.
+unsafe fn path_in(p: *const c_char) -> Result<PathBuf, Error> {
+    match unsafe { str_in(p) } {
+        Some(p) => Ok(PathBuf::from(p)),
+        None => crate::default_db_path().ok_or_else(|| Error::new(Code::Io, "HOME is not set")),
+    }
+}
+
+/// Stores `e` as `{"code": ..., "message": ...}` in `err_out`, if given.
+unsafe fn set_err(err_out: *mut *mut c_char, e: Error) {
+    if !err_out.is_null() {
+        unsafe { *err_out = string_out(json!(e).to_string()) };
+    }
+}
+
 /// Opens (creating if needed) the database. `db_path` NULL means the default
-/// location shared with the CLI. On failure returns NULL and sets `err_out`.
+/// location shared with the CLI. On failure returns NULL and sets `err_out`
+/// to an error object; `locked` means `cr_restore_key` may help.
 ///
 /// # Safety
 /// `db_path` is NULL or a valid C string; `err_out` is NULL or writable.
@@ -114,12 +130,9 @@ pub unsafe extern "C" fn cr_open(
     db_path: *const c_char,
     err_out: *mut *mut c_char,
 ) -> *mut CrHandle {
-    let result = catch_unwind(|| -> Result<CrHandle, String> {
-        let path = match unsafe { str_in(db_path) } {
-            Some(p) => PathBuf::from(p),
-            None => crate::default_db_path().ok_or("HOME is not set")?,
-        };
-        let mut store = Store::open(&path).map_err(|e| e.to_string())?;
+    let result = catch_unwind(|| -> Result<CrHandle, Error> {
+        let path = unsafe { path_in(db_path) }?;
+        let mut store = Store::open(&path)?;
         // Seals keys stored in plaintext; a locked or refused keychain waits for later.
         let _ = store.encrypt_pending();
         Ok(CrHandle {
@@ -128,14 +141,48 @@ pub unsafe extern "C" fn cr_open(
             watching: AtomicBool::new(false),
         })
     })
-    .unwrap_or_else(|_| Err("panic while opening the database".into()));
+    .unwrap_or_else(|_| {
+        Err(Error::new(
+            Code::Internal,
+            "panic while opening the database",
+        ))
+    });
     match result {
         Ok(h) => Box::into_raw(Box::new(h)),
         Err(e) => {
-            if !err_out.is_null() {
-                unsafe { *err_out = string_out(e) };
-            }
+            unsafe { set_err(err_out, e) };
             std::ptr::null_mut()
+        }
+    }
+}
+
+/// Puts a master key from a recovery code back into the Keychain, also when
+/// `cr_open` fails because no stored key opens the encrypted database.
+/// Returns the key's generation, or -1 and sets `err_out`.
+///
+/// # Safety
+/// As for `cr_open`; `code` is a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cr_restore_key(
+    db_path: *const c_char,
+    code: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    let result = catch_unwind(|| -> Result<u32, Error> {
+        let path = unsafe { path_in(db_path) }?;
+        let code = unsafe { str_in(code) }.ok_or_else(|| Error::new(Code::Invalid, "no code"))?;
+        Ok(Store::restore_key_at(
+            &path,
+            crate::crypto::default_keys(),
+            code,
+        )?)
+    })
+    .unwrap_or_else(|_| Err(Error::new(Code::Internal, "internal error")));
+    match result {
+        Ok(generation) => generation.into(),
+        Err(e) => {
+            unsafe { set_err(err_out, e) };
+            -1
         }
     }
 }

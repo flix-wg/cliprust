@@ -166,6 +166,22 @@ struct ImportResult: Codable, Sendable {
     var excludes: Int
 }
 
+/// Keys at rest and whole-database encryption, as `encryption_status` reports them.
+struct EncryptionStatus: Decodable, Equatable, Sendable {
+    /// `ready`, `no_key`, `locked`, `unavailable` or `unsupported`.
+    var keys: String
+    var generation: Int?
+    var message: String?
+    /// Keys not yet sealed with the current master key.
+    var pending: Int
+    /// Keys whose master key is missing from the Keychain or wrong.
+    var unreadable: Int
+    var dbEncrypted: Bool
+    var dbEncryptionAvailable: Bool
+
+    var isLocked: Bool { keys == "locked" || unreadable > 0 }
+}
+
 struct CoreEvent: Decodable, Sendable {
     var type: String
     var id: Int64?

@@ -75,6 +75,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let front = NSWorkspace.shared.frontmostApplication
         target = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         model.prepareForShow()
+        Task { await app.refreshEncryption() }
         panel.setFrame(frameForShow(), display: false)
         panel.orderFrontRegardless()
         panel.makeKey()
@@ -90,6 +91,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         model.isVisible = false
         panel.orderOut(nil)
+        quickLook.clear()
         model.didHide()
         Thumbnails.shared.trim()
     }
@@ -225,10 +227,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         case (kVK_LeftArrow, []) where caretAtEdge(end: false): model.cycleFilter(by: -1)
         case (kVK_RightArrow, []) where caretAtEdge(end: true): model.cycleFilter(by: 1)
         case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []):
-            if model.suggestionSelected || (model.items.isEmpty && model.suggestion != nil) {
-                model.acceptSuggestion()
-            } else {
-                run(.choose(.standard), model.selected)
+            model.whenCurrent { [weak self] in
+                guard let self else { return }
+                if model.suggestionSelected || (model.items.isEmpty && model.suggestion != nil) {
+                    model.acceptSuggestion()
+                } else {
+                    run(.choose(.standard), model.selected)
+                }
             }
         case (kVK_Escape, []): model.hasSearch ? model.clearSearch() : close()
         case (kVK_Tab, []): if !model.acceptSuggestion() { model.cycleFilter(by: 1) }

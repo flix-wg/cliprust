@@ -43,18 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start() async {
         let path = ProcessInfo.processInfo.environment["CLIPRUST_DB"].flatMap { $0.isEmpty ? nil : $0 }
-        let core: Core
-        do {
-            core = try await Core.open(path: path)
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "ClipRust couldn’t open its database"
-            alert.informativeText = error.localizedDescription
-            NSApp.activate()
-            alert.runModal()
-            NSApp.terminate(nil)
-            return
-        }
+        guard let core = await openCore(path: path) else { return NSApp.terminate(nil) }
         let state = AppState(core: core)
         Thumbnails.shared.core = core
         let panel = PanelController(app: state)
@@ -77,11 +66,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Opens the database; while no stored key opens an encrypted one, offers to restore it from a recovery code.
+    private func openCore(path: String?) async -> Core? {
+        var restoreError: String?
+        while true {
+            let error: Error
+            do { return try await Core.open(path: path) } catch let e { error = e }
+            let locked = (error as? CoreError)?.code == "locked"
+            let alert = NSAlert()
+            alert.messageText = "ClipRust couldn’t open its database"
+            alert.informativeText = restoreError ?? error.localizedDescription
+            let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+            if locked {
+                alert.informativeText += "\n\nIf you saved a recovery code, paste it to put the key back into the Keychain."
+                field.placeholderString = "Recovery code"
+                alert.accessoryView = field
+                alert.addButton(withTitle: "Restore Key")
+            }
+            alert.addButton(withTitle: "Quit")
+            NSApp.activate()
+            alert.window.initialFirstResponder = field
+            guard locked, alert.runModal() == .alertFirstButtonReturn else {
+                if !locked { alert.runModal() }
+                return nil
+            }
+            do {
+                _ = try await Core.restoreKey(path: path, code: field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+                restoreError = nil
+            } catch {
+                restoreError = error.localizedDescription
+            }
+        }
+    }
+
     private func handle(_ event: CoreEvent) {
-        guard event.type == "stored" else { return }
-        state?.itemStored(secret: event.secret == true)
-        panel?.model.itemStored()
-        keysWindow.reloadIfOpen()
+        switch event.type {
+        case "stored":
+            state?.itemStored(secret: event.secret == true)
+            panel?.model.itemStored()
+            keysWindow.reloadIfOpen()
+        case "secret_skipped":
+            state?.skippedKey = event.reason ?? "its encryption key is unavailable"
+            Task { await state?.refreshEncryption() }
+        default:
+            break
+        }
     }
 
     @objc func showSettings(_ sender: Any?) { openSettings() }
@@ -96,6 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let state else { return }
         panel?.close()
         keysWindow.show(app: state)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        QuickLookSource.removeFolder()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {

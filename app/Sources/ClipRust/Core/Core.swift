@@ -37,12 +37,35 @@ final class Core: @unchecked Sendable {
                 if let h {
                     cont.resume(returning: Core(handle: h, queue: queue))
                 } else {
-                    let message = err.map { String(cString: $0) } ?? "Could not open the database."
-                    if let err { cr_free_string(err) }
-                    cont.resume(throwing: CoreError(message: message))
+                    cont.resume(throwing: Self.error(err, fallback: "Could not open the database."))
                 }
             }
         }
+    }
+
+    /// Puts a master key from a recovery code back into the Keychain; works while `open` fails as locked.
+    static func restoreKey(path: String?, code: String) async throws -> Int64 {
+        try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var err: UnsafeMutablePointer<CChar>?
+                let generation = code.withCString { c in
+                    path.map { p in p.withCString { cr_restore_key($0, c, &err) } } ?? cr_restore_key(nil, c, &err)
+                }
+                if generation >= 0 {
+                    cont.resume(returning: generation)
+                } else {
+                    cont.resume(throwing: Self.error(err, fallback: "Could not restore the key."))
+                }
+            }
+        }
+    }
+
+    /// Frees an `err_out` string from the core and decodes it.
+    private static func error(_ err: UnsafeMutablePointer<CChar>?, fallback: String) -> CoreError {
+        guard let err else { return CoreError(message: fallback) }
+        defer { cr_free_string(err) }
+        let data = Data(bytes: err, count: strlen(err))
+        return (try? decoder.decode(CoreError.self, from: data)) ?? CoreError(message: String(cString: err))
     }
 
     private func send<T: Decodable>(_ method: String, _ params: [String: Any]) throws -> T {
@@ -215,6 +238,17 @@ extension Core {
     func stats() async throws -> Stats { try await call("stats") }
     func clear() async throws -> Int { try await call("clear") }
     func importPasteNow() async throws -> ImportResult { try await call("import_pastenow") }
+
+    func encryptionStatus() async throws -> EncryptionStatus { try await call("encryption_status") }
+    /// Re-writes the whole file encrypted or in plaintext; returns the new status.
+    func setDbEncryption(_ on: Bool) async throws -> EncryptionStatus { try await call("set_db_encryption", ["on": on]) }
+    func rotateKey() async throws -> Int { try await call("rotate_key") }
+    /// Deletes older master keys from the Keychain; returns their generations.
+    func pruneKeys() async throws -> [Int] { try await call("prune_keys") }
+    func recoveryCode() async throws -> String { try await call("recovery_code") }
+    func restoreKey(_ code: String) async throws -> Int { try await call("restore_key", ["code": code]) }
+    /// Deletes the keys no stored master key can read; returns how many.
+    func forgetUnreadableKeys() async throws -> Int { try await call("forget_unreadable_keys") }
 
     /// The stored bitmap of an image item, whichever format it was copied in.
     func imageData(_ id: Int64) async -> Data? { await data(id: id, format: "image") }

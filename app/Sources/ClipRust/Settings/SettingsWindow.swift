@@ -23,6 +23,7 @@ final class SettingsWindowController {
             ("Lists", "list.bullet", AnyView(ListsPane(app: app))),
             ("History", "clock.arrow.circlepath", AnyView(HistoryPane(app: app))),
             ("Keys", "key.horizontal", AnyView(KeysPane(app: app))),
+            ("Security", "lock", AnyView(SecurityPane(app: app))),
             ("Import", "square.and.arrow.down", AnyView(ImportPane(app: app))),
         ]
         for (title, symbol, view) in panes {
