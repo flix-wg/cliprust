@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use zeroize::Zeroize;
+
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -17,7 +19,9 @@ use crate::monitor::{self, Event};
 use crate::store::{Ingest, Store};
 
 pub struct CrHandle {
-    store: Mutex<Store>,
+    /// Shared with the watcher thread: one connection per process, which
+    /// switching database encryption needs.
+    store: Arc<Mutex<Store>>,
     path: PathBuf,
     watching: AtomicBool,
 }
@@ -115,9 +119,11 @@ pub unsafe extern "C" fn cr_open(
             Some(p) => PathBuf::from(p),
             None => crate::default_db_path().ok_or("HOME is not set")?,
         };
-        let store = Store::open(&path).map_err(|e| e.to_string())?;
+        let mut store = Store::open(&path).map_err(|e| e.to_string())?;
+        // Seals keys stored in plaintext; a locked or refused keychain waits for later.
+        let _ = store.encrypt_pending();
         Ok(CrHandle {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
             path,
             watching: AtomicBool::new(false),
         })
@@ -143,12 +149,16 @@ pub unsafe extern "C" fn cr_close(h: *mut CrHandle) {
     }
 }
 
+/// Overwrites the string (a response may hold a revealed key) and frees it.
+///
 /// # Safety
 /// `s` comes from this library and is freed once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn cr_free_string(s: *mut c_char) {
     if !s.is_null() {
-        drop(unsafe { CString::from_raw(s) });
+        unsafe { CString::from_raw(s) }
+            .into_bytes_with_nul()
+            .zeroize();
     }
 }
 
@@ -262,7 +272,7 @@ pub unsafe extern "C" fn cr_watch(h: *const CrHandle, cb: EventCallback, ctx: *m
     if h.watching.swap(true, Ordering::SeqCst) {
         return;
     }
-    let path = h.path.clone();
+    let store = Arc::clone(&h.store);
     let sink = Arc::new(Sink { cb, ctx });
     let thread_sink = Arc::clone(&sink);
     let spawned = std::thread::Builder::new()
@@ -270,10 +280,8 @@ pub unsafe extern "C" fn cr_watch(h: *const CrHandle, cb: EventCallback, ctx: *m
         .spawn(move || {
             let sink = thread_sink;
             let events = Arc::clone(&sink);
-            let result = Store::open(&path).and_then(|store| {
-                monitor::run(store, monitor::Config::default(), move |ev| {
-                    events.emit(event_json(&ev))
-                })
+            let result = monitor::run(store, monitor::Config::default(), move |ev| {
+                events.emit(event_json(&ev))
             });
             if let Err(e) = result {
                 sink.emit(json!({ "type": "failed", "error": e.to_string() }));
@@ -300,6 +308,7 @@ fn event_json(ev: &Event) -> Value {
             "secret_kind": secret.map(SecretKind::as_str),
         }),
         Event::Skipped(reason) => json!({ "type": "skipped", "reason": reason.to_string() }),
+        Event::SecretSkipped(reason) => json!({ "type": "secret_skipped", "reason": reason }),
         Event::Failed(e) => json!({ "type": "failed", "error": e.to_string() }),
     }
 }

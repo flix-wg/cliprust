@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::io::Read;
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -68,6 +68,9 @@ enum Cmd {
         /// Drop rich text, HTML and other formats
         #[arg(long)]
         plain: bool,
+        /// Copy a key's value (marked concealed, so clipboard managers skip it)
+        #[arg(long)]
+        reveal: bool,
     },
     /// Store text from the argument or stdin without using the clipboard
     Add {
@@ -128,8 +131,12 @@ enum Cmd {
         change: Option<SettingsCmd>,
     },
     Stats,
-    /// Look for keys in clips stored while key detection was off
+    /// Look for keys in clips stored while key detection was off, and
+    /// encrypt keys still stored in plaintext
     Rescan,
+    /// Encrypt the whole database file (macOS), or show whether it is
+    #[command(subcommand)]
+    Encryption(EncryptionCmd),
     /// Copy history, lists and exclusions from PasteNow (quit PasteNow first)
     #[cfg(feature = "pastenow-import")]
     ImportPastenow {
@@ -142,6 +149,21 @@ enum Cmd {
 enum KeysCmd {
     /// Providers and sites with how many keys and IDs each has
     Facets,
+    /// Replace the master key that encrypts stored keys
+    Rotate,
+    /// Print the master key as a recovery code, for a password manager
+    RecoveryCode,
+    /// Put the master key back from a recovery code read from stdin
+    Restore,
+}
+
+#[derive(Subcommand)]
+enum EncryptionCmd {
+    /// Encrypt the database file with SQLCipher (quit the app first)
+    On,
+    /// Store the database file unencrypted again (quit the app first)
+    Off,
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -211,6 +233,17 @@ fn run(cli: Cli) -> CliResult {
         Some(path) => path,
         None => cliprust::default_db_path().ok_or("HOME is not set")?,
     };
+    if let Cmd::Keys {
+        cmd: Some(KeysCmd::Restore),
+        ..
+    } = cli.cmd
+    {
+        // Works before the store can open: the file may be encrypted.
+        let code = zeroize::Zeroizing::new(prompt("Paste the recovery code: ")?);
+        let generation = Store::restore_key_at(&path, cliprust::crypto::default_keys(), &code)?;
+        println!("restored key generation {generation}");
+        return Ok(());
+    }
     let mut store = Store::open(&path)?;
     match cli.cmd {
         Cmd::Watch {
@@ -277,10 +310,18 @@ fn run(cli: Cli) -> CliResult {
                 }
             }
         }
-        Cmd::Copy { id, plain } => {
+        Cmd::Copy { id, plain, reveal } => {
+            let summary = store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            let is_key = summary.secret_kind == Some(SecretKind::Key);
+            if is_key && !reveal {
+                return Err(format!("#{id} is a key; add --reveal to copy its value").into());
+            }
             let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
             let ctx = clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?;
-            capture::write(&ctx, &item.reps, plain)?;
+            match item.text() {
+                Some(value) if is_key => capture::write_secret(&ctx, value)?,
+                _ => capture::write(&ctx, &item.reps, plain)?,
+            }
             store.touch(id, now_ms())?;
         }
         Cmd::Add { text } => {
@@ -296,15 +337,39 @@ fn run(cli: Cli) -> CliResult {
             if store.settings()?.detect_keys {
                 secrets::annotate(&mut cap, || None);
             }
-            match store.ingest(&cap, now_ms())? {
-                Ingest::Inserted(id) => println!("stored #{id}"),
-                Ingest::Duplicate(id) => println!("already stored as #{id}, moved to top"),
+            match store.ingest(&cap, now_ms()) {
+                Ok(Ingest::Inserted(id)) => println!("stored #{id}"),
+                Ok(Ingest::Duplicate(id)) => println!("already stored as #{id}, moved to top"),
+                Err(cliprust::Error::Locked(why)) if cap.secret.is_some() => {
+                    return Err(format!("key not stored: {why}").into());
+                }
+                Err(e) => return Err(e.into()),
             }
         }
         Cmd::Title { id, title } => require(store.set_title(id, title.as_deref())?, id)?,
         Cmd::Delete { id } => require(store.delete(id)?, id)?,
         Cmd::Clear => println!("deleted {} items", store.clear()?),
         Cmd::Prune { keep } => println!("deleted {} items", store.prune(Some(keep), None)?),
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Rotate),
+            ..
+        } => println!("now using key generation {}", store.rotate_key()?),
+        Cmd::Keys {
+            cmd: Some(KeysCmd::RecoveryCode),
+            ..
+        } => {
+            eprintln!(
+                "The recovery code is the key to every stored key. Keep it in a password manager."
+            );
+            if prompt("Type \"show\" to print it: ")? != "show" {
+                return Err("cancelled".into());
+            }
+            println!("{}", store.recovery_code()?.as_str());
+        }
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Restore),
+            ..
+        } => unreachable!("handled before opening the store"),
         Cmd::Keys {
             cmd: Some(KeysCmd::Facets),
             ..
@@ -371,7 +436,42 @@ fn run(cli: Cli) -> CliResult {
             store.save_settings(&settings)?;
             println!("{}", serde_json::to_string_pretty(&settings)?);
         }
-        Cmd::Rescan => println!("{} keys found", store.rescan_keys()?),
+        Cmd::Rescan => {
+            println!("{} keys found", store.rescan_keys()?);
+            match store.encrypt_pending() {
+                Ok(0) => {}
+                Ok(n) => println!("{n} keys encrypted"),
+                Err(e) => eprintln!("cliprust: keys not encrypted: {e}"),
+            }
+        }
+        Cmd::Encryption(cmd) => {
+            match cmd {
+                EncryptionCmd::On => store.set_db_encryption(true)?,
+                EncryptionCmd::Off => store.set_db_encryption(false)?,
+                EncryptionCmd::Status => {}
+            }
+            let s = store.encryption_status()?;
+            println!(
+                "key            {:?}{}",
+                s.keys,
+                s.generation
+                    .map(|g| format!(" (generation {g})"))
+                    .unwrap_or_default()
+            );
+            if let Some(message) = &s.message {
+                println!("               {message}");
+            }
+            println!("pending keys   {}", s.pending);
+            println!("unreadable     {}", s.unreadable);
+            println!(
+                "database file  {}",
+                if s.db_encrypted {
+                    "encrypted"
+                } else {
+                    "not encrypted"
+                }
+            );
+        }
         Cmd::Stats => {
             let s = store.stats()?;
             println!("items          {}", s.items);
@@ -462,6 +562,9 @@ fn watch(store: Store, config: monitor::Config, path: &Path) -> CliResult {
             ..
         } => eprintln!("seen again #{id}"),
         Event::Skipped(reason) => eprintln!("skipped: {reason}"),
+        Event::SecretSkipped(why) => {
+            eprintln!("warning: a copied key was not stored ({why}); it is still on the clipboard")
+        }
         Event::Failed(e) => eprintln!("error: {e}"),
     };
     #[cfg(target_os = "macos")]
@@ -584,6 +687,15 @@ fn limit_value(value: &str) -> CliResult<Option<u32>> {
     Ok(Some(value.parse().map_err(|_| {
         format!("expected a number or \"off\", got {value:?}")
     })?))
+}
+
+/// Reads one line from stdin after printing `question` to stderr.
+fn prompt(question: &str) -> CliResult<String> {
+    eprint!("{question}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_owned())
 }
 
 fn require(found: bool, id: i64) -> CliResult {

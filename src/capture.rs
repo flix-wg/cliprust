@@ -164,6 +164,19 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
 }
 
 /// Puts an item back on the clipboard. `plain_text` writes only the text.
+/// Marks a pasteboard item as a password, so clipboard managers skip it.
+pub const CONCEALED_TYPE: &str = "org.nspasteboard.ConcealedType";
+
+/// Writes a revealed key as plain text marked concealed, in one item, so no
+/// reader sees the value without the marker.
+pub fn write_secret(ctx: &impl Clipboard, value: &str) -> Result<()> {
+    ctx.set(vec![
+        ClipboardContent::Other(CONCEALED_TYPE.to_owned(), Vec::new()),
+        ClipboardContent::Text(value.to_owned()),
+    ])
+    .map_err(|e| Error::Clipboard(e.to_string()))
+}
+
 pub fn write(ctx: &impl Clipboard, reps: &[Rep], plain_text: bool) -> Result<()> {
     let contents: Vec<ClipboardContent> = reps
         .iter()

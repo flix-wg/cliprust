@@ -93,6 +93,16 @@ enum Request {
     },
     Stats {},
     Clear {},
+    EncryptionStatus {},
+    SetDbEncryption {
+        on: bool,
+    },
+    RotateKey {},
+    RecoveryCode {},
+    RestoreKey {
+        code: String,
+    },
+    ForgetUnreadableKeys {},
     #[cfg(feature = "pastenow-import")]
     ImportPastenow {
         path: Option<PathBuf>,
@@ -146,6 +156,7 @@ pub(super) fn call(h: &CrHandle, request: &str) -> R<Value> {
 fn handle(h: &CrHandle, req: Request) -> R<Value> {
     let now = now_ms();
     let mut store = h.store();
+    store.revalidate()?;
     Ok(match req {
         Request::Items(q) => Value::from_iter(items(&store, q, now)?.iter().map(summary)),
         Request::ParseQuery { query, app } => {
@@ -175,11 +186,11 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
             v
         }
         Request::PastePrep { id, plain } => {
-            let item = store.get(id)?.ok_or_else(no_item)?;
             // Keys go through reveal_key so the app can gate and conceal them.
-            if is_masked(&item.summary) {
+            if is_masked(&store.summary(id)?.ok_or_else(no_item)?) {
                 return Err(Error::new(Code::Invalid, "item is a key"));
             }
+            let item = store.get(id)?.ok_or_else(no_item)?;
             platform::with_autorelease_pool(|| -> R<()> {
                 let ctx = clipboard_rs::ClipboardContext::new()
                     .map_err(|e| Error::new(Code::Io, e.to_string()))?;
@@ -230,6 +241,8 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
         Request::SaveSettings(settings) => {
             store.save_settings(&settings)?;
             store.apply_retention(&settings, now)?;
+            // Keys found by a rescan are sealed now if the keychain allows.
+            let _ = store.encrypt_pending();
             json!(settings)
         }
         Request::Excludes {} => json!(store.excludes()?),
@@ -249,6 +262,19 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
             })
         }
         Request::Clear {} => json!(store.clear()?),
+        Request::EncryptionStatus {} => json!(store.encryption_status()?),
+        Request::SetDbEncryption { on } => {
+            store.set_db_encryption(on)?;
+            json!(store.encryption_status()?)
+        }
+        Request::RotateKey {} => json!(store.rotate_key()?),
+        Request::RecoveryCode {} => json!(store.recovery_code()?.as_str()),
+        Request::RestoreKey { code } => {
+            let generation = store.restore_key(&code)?;
+            let _ = store.encrypt_pending();
+            json!(generation)
+        }
+        Request::ForgetUnreadableKeys {} => json!(store.forget_unreadable_keys()?),
         #[cfg(feature = "pastenow-import")]
         Request::ImportPastenow { path } => {
             let r = crate::import_pastenow::import_live(&mut store, path)?;
@@ -359,7 +385,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
         let h = CrHandle {
-            store: Mutex::new(Store::open(&path).unwrap()),
+            store: std::sync::Arc::new(Mutex::new(Store::open(&path).unwrap())),
             path,
             watching: AtomicBool::new(false),
         };

@@ -1,6 +1,7 @@
 //! The capture loop: clipboard change → filters → store.
 
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clipboard_rs::ClipboardContext;
@@ -18,7 +19,28 @@ pub enum Event {
         secret: Option<SecretKind>,
     },
     Skipped(Skipped),
+    /// A key was copied but not stored: its encryption key is unavailable.
+    /// The key is still on the clipboard; nothing reached the disk.
+    SecretSkipped(String),
     Failed(Error),
+}
+
+/// The store the watcher writes to: its own, or one shared with the caller
+/// (the app), so a process has one connection to the file.
+pub trait StoreAccess: Send + 'static {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> R;
+}
+
+impl StoreAccess for Store {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> R {
+        f(self)
+    }
+}
+
+impl StoreAccess for Arc<Mutex<Store>> {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> R {
+        f(&mut self.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,14 +61,14 @@ impl Default for Config {
     }
 }
 
-struct Handler<F> {
-    store: Store,
+struct Handler<S, F> {
+    store: S,
     ctx: ClipboardContext,
     max_item_bytes: usize,
     on_event: F,
 }
 
-impl<F: FnMut(Event)> Handler<F> {
+impl<S: StoreAccess, F: FnMut(Event)> Handler<S, F> {
     fn on_change(&mut self) {
         let event =
             platform::with_autorelease_pool(|| self.capture().unwrap_or_else(Event::Failed));
@@ -55,22 +77,25 @@ impl<F: FnMut(Event)> Handler<F> {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl<F: FnMut(Event)> clipboard_rs::ClipboardHandler for Handler<F> {
+impl<S: StoreAccess, F: FnMut(Event)> clipboard_rs::ClipboardHandler for Handler<S, F> {
     fn on_clipboard_change(&mut self) {
         self.on_change();
     }
 }
 
-impl<F> Handler<F> {
+impl<S: StoreAccess, F> Handler<S, F> {
     fn capture(&mut self) -> Result<Event> {
-        let settings = self.store.settings()?;
+        let settings = self.store.with(|s| {
+            s.revalidate()?;
+            s.settings()
+        })?;
         if settings.paused {
             return Ok(Event::Skipped(Skipped::Paused));
         }
         // Check exclusions before touching the content at all.
         let app = platform::frontmost_app();
         if let Some(app) = &app
-            && self.store.is_excluded(&app.bundle_id)?
+            && self.store.with(|s| s.is_excluded(&app.bundle_id))?
         {
             return Ok(Event::Skipped(Skipped::Excluded(app.bundle_id.clone())));
         }
@@ -84,10 +109,23 @@ impl<F> Handler<F> {
             secrets::annotate(&mut cap, || platform::browser_page(bundle_id.as_deref()?));
         }
         let now = crate::now_ms();
-        let outcome = self.store.ingest(&cap, now)?;
-        if matches!(outcome, Ingest::Inserted(_)) {
-            self.store.apply_retention(&settings, now)?;
+        let stored = self.store.with(|s| {
+            let outcome = s.ingest(&cap, now)?;
+            if matches!(outcome, Ingest::Inserted(_)) {
+                s.apply_retention(&settings, now)?;
+            }
+            Ok(outcome)
+        });
+        let is_key = cap.secret.as_ref().map(|s| s.kind) == Some(SecretKind::Key);
+        if is_key {
+            for rep in &mut cap.reps {
+                zeroize::Zeroize::zeroize(&mut rep.data);
+            }
         }
+        let outcome = match stored {
+            Err(Error::Locked(why)) if is_key => return Ok(Event::SecretSkipped(why)),
+            other => other?,
+        };
         Ok(Event::Stored {
             outcome,
             kind: cap.kind,
@@ -107,7 +145,7 @@ pub fn own_change(count: isize) {
 
 /// Watches the clipboard until the process exits, reporting every change.
 pub fn run(
-    store: Store,
+    store: impl StoreAccess,
     config: Config,
     on_event: impl FnMut(Event) + Send + 'static,
 ) -> Result<()> {
@@ -128,7 +166,10 @@ fn clip_err(e: Box<dyn std::error::Error + Send + Sync>) -> Error {
 /// poll toward `max_interval`; a clipboard change or a switch of frontmost app
 /// snaps back to `interval`. The wait is a park, so `unpark` wakes it at once.
 #[cfg(target_os = "macos")]
-fn watch<F: FnMut(Event)>(mut handler: Handler<F>, config: Config) -> Result<()> {
+fn watch<S: StoreAccess, F: FnMut(Event)>(
+    mut handler: Handler<S, F>,
+    config: Config,
+) -> Result<()> {
     let mut last = platform::pasteboard_state();
     let mut delay = config.interval;
     loop {
@@ -148,7 +189,10 @@ fn watch<F: FnMut(Event)>(mut handler: Handler<F>, config: Config) -> Result<()>
 }
 
 #[cfg(not(target_os = "macos"))]
-fn watch<F: FnMut(Event) + Send + 'static>(handler: Handler<F>, config: Config) -> Result<()> {
+fn watch<S: StoreAccess, F: FnMut(Event) + Send + 'static>(
+    handler: Handler<S, F>,
+    config: Config,
+) -> Result<()> {
     use clipboard_rs::{ClipboardWatcher, ClipboardWatcherContext};
     let mut watcher =
         ClipboardWatcherContext::new_with_interval(config.interval).map_err(clip_err)?;
