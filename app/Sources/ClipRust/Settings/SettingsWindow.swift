@@ -19,6 +19,7 @@ final class SettingsWindowController {
         let panes: [(String, String, AnyView)] = [
             ("General", "gearshape", AnyView(GeneralPane(app: app))),
             ("Appearance", "paintbrush", AnyView(AppearancePane())),
+            ("Lists", "list.bullet", AnyView(ListsPane(app: app))),
             ("History", "clock.arrow.circlepath", AnyView(HistoryPane(app: app))),
             ("Keys", "key.horizontal", AnyView(KeysPane(app: app))),
             ("Import", "square.and.arrow.down", AnyView(ImportPane(app: app))),

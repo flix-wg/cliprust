@@ -29,17 +29,40 @@ struct PanelView: View {
             }
         }
         .background { PanelBackground() }
+        .overlay(alignment: .topLeading) {
+            if model.palette != nil {
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.001).onTapGesture { model.palette = nil }
+                    ListPaletteView(model: model).padding(.top, 46).padding(.leading, 12)
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let toast = model.toast {
+                Label(toast, systemImage: "checkmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 12)
+                    .frame(height: 28)
+                    .background { PanelBackground(radius: 14) }
+                    .overlay { Capsule().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5) }
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: model.toast)
         .clipShape(.rect(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
         }
-        .coordinateSpace(.named("panel"))
         .scaleEffect(model.isVisible || reduceMotion ? 1 : 0.98)
         .opacity(model.isVisible ? 1 : 0)
         .animation(.easeOut(duration: 0.12), value: model.isVisible)
         .onChange(of: model.isVisible, initial: true) { _, visible in
             if visible { searchFocused = true }
+        }
+        .onChange(of: model.palette == nil) { _, closed in
+            if closed { searchFocused = true }
         }
     }
 
@@ -67,28 +90,31 @@ struct PanelView: View {
 }
 
 struct PanelBackground: View {
+    var radius: CGFloat = 14
     @Environment(\.renderingPreview) private var rendering
 
     var body: some View {
         if rendering {
             Color(nsColor: .windowBackgroundColor)
         } else {
-            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: radius, style: .continuous))
         }
     }
 }
 
 struct FilterBar: View {
     @Bindable var model: PanelModel
+    @AppStorage(Prefs.Key.showTypeFilters) private var showKinds = true
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(model.filters, id: \.self) { filter in
+                    ForEach(Array(model.filters(kinds: showKinds).enumerated()), id: \.element) { i, filter in
                         Chip(title: filter.title,
                              count: model.showsCount(filter) ? model.countLabel : nil,
-                             selected: model.filter == filter) { model.filter = filter }
+                             selected: model.filter == filter,
+                             hint: model.controlHeld && i < 9 ? i + 1 : nil) { model.filter = filter }
                             .id(filter)
                     }
                 }
@@ -105,6 +131,7 @@ struct Chip: View {
     let title: String
     let count: String?
     let selected: Bool
+    var hint: Int?
     let action: () -> Void
     @State private var hovering = false
 
@@ -120,6 +147,14 @@ struct Chip: View {
             .foregroundStyle(selected ? .primary : .secondary)
             .padding(.horizontal, 9)
             .frame(height: 24)
+            .overlay(alignment: .leading) {
+                if let hint {
+                    Text("\(hint)")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 2.5)
+                }
+            }
             .background(Capsule().fill(Color.primary.opacity(selected ? 0.1 : hovering ? 0.05 : 0)))
             .contentShape(Capsule())
         }
@@ -139,9 +174,6 @@ struct ItemList: View {
                         ItemRow(item: item, index: index, selected: item.id == model.selectedID,
                                 pinned: model.app.pinnedIDs.contains(item.id))
                             .id(item.id)
-                            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("panel")) }) { frame in
-                                model.rowFrames[item.id] = frame
-                            }
                             .onTapGesture {
                                 model.selectedID = item.id
                                 if NSApp.currentEvent?.clickCount == 2 { model.perform(.choose(.standard), item) }

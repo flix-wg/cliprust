@@ -4,8 +4,6 @@ import Observation
 enum ItemFilter: Hashable {
     case all, kind(ItemKind), keys, list(String)
 
-    static let fixed: [ItemFilter] = [.all, .kind(.text), .kind(.url), .kind(.image), .kind(.file), .keys]
-
     var title: String {
         switch self {
         case .all: "All"
@@ -33,22 +31,39 @@ final class PanelModel {
 
     let app: AppState
     var query = "" { didSet { if query != oldValue { reload(resetSelection: true) } } }
-    var filter: ItemFilter = .all { didSet { if filter != oldValue { reload(resetSelection: true) } } }
+    var filter: ItemFilter = .all {
+        didSet {
+            guard filter != oldValue else { return }
+            if isVisible { Prefs.lastFilter = filter.key }
+            reload(resetSelection: true)
+        }
+    }
     var items: [Item] = []
     var selectedID: Int64? { didSet { if selectedID != oldValue { loadDetail() } } }
     var detail: Item?
     var loaded = false
     var isVisible = false
+    var palette: ListPalette?
+    var toast: String?
+    var controlHeld = false
 
-    @ObservationIgnored var rowFrames: [Int64: CGRect] = [:]
     @ObservationIgnored var perform: (PanelAction, Item) -> Void = { _, _ in }
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var toastGeneration = 0
 
     init(app: AppState) {
         self.app = app
     }
 
-    var filters: [ItemFilter] { ItemFilter.fixed + app.userLists.map { .list($0.name) } }
+    /// Bar order: All, pinned lists, Keys, the type filters, then the other lists.
+    func filters(kinds: Bool = Prefs.showTypeFilters) -> [ItemFilter] {
+        let lists = app.orderedLists.map(\.name)
+        let pinned = lists.filter(app.pinnedLists.contains)
+        var out: [ItemFilter] = [.all] + pinned.map(ItemFilter.list)
+        if app.hasKeysList { out.append(.keys) }
+        if kinds { out += ItemFilter.kinds }
+        return out + lists.filter { !pinned.contains($0) }.map(ItemFilter.list)
+    }
     var selectedIndex: Int? { items.firstIndex { $0.id == selectedID } }
     var selected: Item? { selectedIndex.map { items[$0] } }
     var current: Item? {
@@ -79,7 +94,21 @@ final class PanelModel {
     }
 
     func prepareForShow() {
-        if query.isEmpty { reload(resetSelection: true) } else { query = "" }
+        palette = nil
+        controlHeld = false
+        let last = Prefs.openOn == .last ? Prefs.lastFilter.flatMap(ItemFilter.init(key:)) : nil
+        let target = last.flatMap { filters().contains($0) ? $0 : nil } ?? .all
+        if query.isEmpty, filter == target { reload(resetSelection: true) } else { query = ""; filter = target }
+    }
+
+    func showToast(_ text: String) {
+        toastGeneration += 1
+        let gen = toastGeneration
+        toast = text
+        Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            if gen == toastGeneration { toast = nil }
+        }
     }
 
     func reload(resetSelection: Bool = false) {
@@ -116,7 +145,7 @@ final class PanelModel {
     }
 
     func cycleFilter(by delta: Int) {
-        let all = filters
+        let all = filters()
         let i = all.firstIndex(of: filter) ?? 0
         filter = all[(i + delta + all.count) % all.count]
     }

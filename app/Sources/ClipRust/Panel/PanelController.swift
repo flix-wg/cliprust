@@ -89,6 +89,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             QLPreviewPanel.shared().orderOut(nil)
         }
         model.isVisible = false
+        model.controlHeld = false
         panel.orderOut(nil)
     }
 
@@ -166,6 +167,11 @@ final class PanelController: NSObject, NSWindowDelegate {
                 return self.handleKey(event) ? nil : event
             }
         }) { monitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] e in
+            let control = e.modifierFlags.intersection([.command, .option, .control, .shift]) == .control
+            MainActor.assumeIsolated { self?.model.controlHeld = control }
+            return e
+        }) { monitors.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -185,6 +191,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
         let code = Int(e.keyCode)
         let item = model.selected
+        if paletteKey(key, mods) { return true }
+        if model.palette != nil { return handlePaletteKey(code, mods, key) }
 
         switch (code, mods) {
         case (kVK_DownArrow, []): model.move(by: 1)
@@ -201,6 +209,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         case (kVK_RightArrow, .command): model.cycleFilter(by: 1)
         case (kVK_Space, []) where model.query.isEmpty: run(.quickLook, item)
         case (kVK_Delete, .command): run(.delete, item)
+        case (_, .control) where ("1"..."9").contains(key) && key.count == 1:
+            if !model.jump(to: Int(key)! - 1) { NSSound.beep() }
         case (_, .control) where key == "n": model.move(by: 1)
         case (_, .control) where key == "p": model.move(by: -1)
         case (_, .command):
@@ -210,7 +220,6 @@ final class PanelController: NSObject, NSWindowDelegate {
                 guard i < model.items.count else { NSSound.beep(); return true }
                 perform(.choose(.standard), model.items[i])
             case "p": UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Prefs.Key.showPreview), forKey: Prefs.Key.showPreview)
-            case "d": run(.newList, item, menu: true)
             case "r": run(.rename, item)
             case "n": run(.note, item)
             case "k": openKeys()
@@ -224,9 +233,38 @@ final class PanelController: NSObject, NSWindowDelegate {
         return true
     }
 
-    private func run(_ action: PanelAction, _ item: Item?, menu: Bool = false) {
+    /// ⌘L, ⌘D and ⌘⇧S open the list palette in any state.
+    private func paletteKey(_ key: String, _ mods: NSEvent.ModifierFlags) -> Bool {
+        let mode: ListPalette.Mode
+        switch (key, mods) {
+        case ("l", .command): mode = .go
+        case ("d", .command):
+            guard let id = model.selectedID else { NSSound.beep(); return true }
+            mode = .add(id)
+        case ("s", [.command, .shift]): mode = .saveSearch
+        default: return false
+        }
+        if !model.openPalette(mode) { NSSound.beep() }
+        return true
+    }
+
+    private func handlePaletteKey(_ code: Int, _ mods: NSEvent.ModifierFlags, _ key: String) -> Bool {
+        switch (code, mods) {
+        case (kVK_Escape, []): model.palette = nil
+        case (kVK_DownArrow, []): model.movePalette(by: 1)
+        case (kVK_UpArrow, []): model.movePalette(by: -1)
+        case (_, .control) where key == "n": model.movePalette(by: 1)
+        case (_, .control) where key == "p": model.movePalette(by: -1)
+        case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []): if !model.confirmPalette() { NSSound.beep() }
+        case (kVK_Tab, _): break
+        default: return false
+        }
+        return true
+    }
+
+    private func run(_ action: PanelAction, _ item: Item?) {
         guard let item else { NSSound.beep(); return }
-        menu ? showListMenu(for: item) : perform(action, item)
+        perform(action, item)
     }
 
     // MARK: - Actions
@@ -238,7 +276,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .addToList(let name):
             Task { await app.addToList(name, item.id) }
         case .newList:
-            promptNewList(for: item)
+            _ = model.openPalette(.add(item.id))
         case .removeFromList(let name):
             Task {
                 await app.removeFromList(name, item.id)
@@ -271,28 +309,6 @@ final class PanelController: NSObject, NSWindowDelegate {
             toggleQuickLook(item)
         case .delete:
             model.delete(item)
-        }
-    }
-
-    private func showListMenu(for item: Item) {
-        let menu = NSMenu()
-        for list in app.manualLists {
-            menu.addItem(ActionMenuItem(list.name) { [weak self] in self?.perform(.addToList(list.name), item) })
-        }
-        if !menu.items.isEmpty { menu.addItem(.separator()) }
-        menu.addItem(ActionMenuItem("New List…") { [weak self] in self?.perform(.newList, item) })
-        let rect = model.rowFrames[item.id] ?? CGRect(x: 16, y: 100, width: 200, height: 30)
-        let y = host.isFlipped ? rect.maxY : host.bounds.height - rect.maxY
-        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX + 34, y: y), in: host)
-    }
-
-    private func promptNewList(for item: Item) {
-        prompt(title: "New List", message: "The item is added to the new list.", value: "", placeholder: "List name", confirm: "Create") { [weak self] name in
-            let name = name.trimmingCharacters(in: .whitespaces)
-            guard let self, !name.isEmpty else { return }
-            Task {
-                if await self.app.createList(name) { await self.app.addToList(name, item.id) }
-            }
         }
     }
 

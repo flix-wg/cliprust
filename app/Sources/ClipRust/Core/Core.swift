@@ -118,7 +118,17 @@ extension Core {
         try await run("set_note", ["id": id, "note": note.map { $0 as Any } ?? NSNull()])
     }
     func lists() async throws -> [ClipList] { try await call("lists") }
-    func createList(_ name: String) async throws { try await run("create_list", ["name": name]) }
+    /// With `contains`, a smart list matching that text (and `kind`, if given).
+    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil) async throws {
+        var p: [String: Any] = ["name": name]
+        if let text {
+            var rules: [[String: Any]] = [["type": "contains", "text": text]]
+            if let kind { rules.append(["type": "kind", "kind": kind.rawValue]) }
+            p["rule"] = ["type": "all", "rules": rules]
+        }
+        try await run("create_list", p)
+    }
+    func renameList(_ name: String, _ newName: String) async throws { try await run("rename_list", ["name": name, "new_name": newName]) }
     func deleteList(_ name: String) async throws { try await run("delete_list", ["name": name]) }
     func addToList(_ name: String, _ id: Int64) async throws { try await run("add_to_list", ["name": name, "id": id]) }
     func removeFromList(_ name: String, _ id: Int64) async throws { try await run("remove_from_list", ["name": name, "id": id]) }

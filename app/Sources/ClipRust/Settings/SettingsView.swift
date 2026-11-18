@@ -117,6 +117,90 @@ struct AppearancePane: View {
     }
 }
 
+struct ListsPane: View {
+    let app: AppState
+    @AppStorage(Prefs.Key.showTypeFilters) private var showTypeFilters = true
+    @AppStorage(Prefs.Key.openOn) private var openOn = OpenOn.all
+    @State private var deleting: ClipList?
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show type filters (Text, Links, Images, Files)", isOn: $showTypeFilters)
+                Picker("Open panel on", selection: $openOn) {
+                    Text("All").tag(OpenOn.all)
+                    Text("Last used list").tag(OpenOn.last)
+                }
+            }
+            Section {
+                if app.orderedLists.isEmpty {
+                    Text("No lists yet. Press ⌘L in the panel to create one.").foregroundStyle(.secondary)
+                }
+                ForEach(app.orderedLists) { list in
+                    ListRow(app: app, list: list) { deleting = list }
+                }
+                .onMove { from, to in
+                    var names = app.orderedLists.map(\.name)
+                    names.move(fromOffsets: from, toOffset: to)
+                    app.listOrder = names
+                }
+            } header: {
+                Text("Lists")
+            } footer: {
+                Caption("Drag to reorder. Pinned lists come first in the filter bar. ⌃1–⌃9 jump to a chip, ⌘L to any list.")
+            }
+        }
+        .settingsPane()
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            presenting: deleting) { list in
+            Button("Delete List", role: .destructive) { Task { await app.deleteList(list.name) } }
+        } message: { list in
+            Text(list.manual ? "Its items stay in your history but are no longer kept by the list." : "Its items stay in your history.")
+        }
+    }
+}
+
+private struct ListRow: View {
+    let app: AppState
+    let list: ClipList
+    let delete: () -> Void
+    @State private var name = ""
+
+    var body: some View {
+        let pinned = app.pinnedLists.contains(list.name)
+        HStack(spacing: 8) {
+            Image(systemName: list.manual ? "list.bullet" : "line.3.horizontal.decrease")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            TextField("Name", text: $name)
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.leading)
+                .onSubmit(rename)
+            Button { app.togglePin(list.name) } label: {
+                Image(systemName: pinned ? "pin.fill" : "pin")
+                    .foregroundStyle(pinned ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            }
+            .buttonStyle(.borderless)
+            .help(pinned ? "Unpin" : "Pin to the front of the filter bar")
+            Button(action: delete) {
+                Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Delete \(list.name)")
+        }
+        .onChange(of: list.name, initial: true) { _, n in name = n }
+    }
+
+    private func rename() {
+        let new = name.trimmingCharacters(in: .whitespaces)
+        guard !new.isEmpty, new != list.name else { name = list.name; return }
+        Task {
+            guard await app.renameList(list.name, to: new) else { name = list.name; NSSound.beep(); return }
+        }
+    }
+}
+
 struct HistoryPane: View {
     let app: AppState
     @State private var confirmClear = false

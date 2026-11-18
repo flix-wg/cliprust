@@ -35,7 +35,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - under the menu-bar icon
 - **Layout, top to bottom:**
   1. **Search field.** It is always focused, uses 15 pt text and has a magnifier glyph. Placeholder: "Search clipboard". Typing filters at once, searching text, title and note, across the whole history and not just the loaded page.
-  2. **Filter bar.** A row of compact capsule chips: All · Text · Links · Images · Files · Keys, followed by the user's lists (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips.
+  2. **Filter bar.** A row of compact capsule chips: All, pinned lists, Keys (once a key exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
   3. **Body.** The list is on the left. A preview pane (toggled with ⌘P, on by default) takes 42 % of the width on the right.
 - **List rows.** A row is 34 pt high in Compact and 44 pt in Comfortable. Each row contains:
   - **leading:** the source app's icon at 16 pt, or a kind glyph when the app is unknown
@@ -66,12 +66,17 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⌘P | toggle preview |
 | ␣ (when search is empty) | Quick Look the item |
 | ⌘⌫ | delete item |
-| ⌘D | add to list… (popover menu of manual lists, plus "New list…") |
+| ⌘L | go to list: palette of every chip; ⏎ on an unknown name creates a manual list and switches to it |
+| ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
+| ⌘⇧S | save search as a smart list (text, plus the active type filter) and switch to it |
+| ⌃1…⌃9 | jump to filter chip N |
 | ⌘R | rename (title) |
 | ⌘N | edit note |
 | ⌘K | open Keys & IDs |
 | ⌘, | Settings |
-| Esc | clear search, else close |
+| Esc | close the list palette, else clear search, else close |
+
+The list palette is a 280 pt glass overlay under the search field: type to filter (prefix matches first), ↑↓ or ⌃N/⌃P to move, ⏎ to confirm, Esc or a click outside to close. Lists are reordered, pinned, renamed and deleted in Settings → Lists.
 
 Clicking outside the panel closes it.
 

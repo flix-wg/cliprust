@@ -27,6 +27,11 @@ enum AfterChoosing: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum OpenOn: String, CaseIterable, Identifiable {
+    case all, last
+    var id: String { rawValue }
+}
+
 enum Prefs {
     enum Key {
         static let panelPosition = "panelPosition"
@@ -42,6 +47,11 @@ enum Prefs {
         static let requireAuth = "requireAuthForKeys"
         static let hotkey = "openShortcut"
         static let explainedAccessibility = "explainedAccessibility"
+        static let showTypeFilters = "showTypeFilters"
+        static let openOn = "openPanelOn"
+        static let lastFilter = "lastFilter"
+        static let pinnedLists = "pinnedLists"
+        static let listOrder = "listOrder"
     }
 
     static let defaultPanelSize = NSSize(width: 680, height: 440)
@@ -58,6 +68,8 @@ enum Prefs {
             Key.showAppIcons: true,
             Key.showHints: true,
             Key.requireAuth: true,
+            Key.showTypeFilters: true,
+            Key.openOn: OpenOn.all.rawValue,
         ])
     }
 
@@ -66,6 +78,23 @@ enum Prefs {
     static var plainText: Bool { d.bool(forKey: Key.plainText) }
     static var requireAuth: Bool { d.bool(forKey: Key.requireAuth) }
     static var showMenuIcon: Bool { d.bool(forKey: Key.showMenuIcon) }
+    static var showTypeFilters: Bool { d.bool(forKey: Key.showTypeFilters) }
+    static var openOn: OpenOn { OpenOn(rawValue: d.string(forKey: Key.openOn) ?? "") ?? .all }
+
+    static var lastFilter: String? {
+        get { d.string(forKey: Key.lastFilter) }
+        set { d.set(newValue, forKey: Key.lastFilter) }
+    }
+
+    static var pinnedLists: [String] {
+        get { d.stringArray(forKey: Key.pinnedLists) ?? [] }
+        set { d.set(newValue, forKey: Key.pinnedLists) }
+    }
+
+    static var listOrder: [String] {
+        get { d.stringArray(forKey: Key.listOrder) ?? [] }
+        set { d.set(newValue, forKey: Key.listOrder) }
+    }
 
     static var panelSize: NSSize {
         get {

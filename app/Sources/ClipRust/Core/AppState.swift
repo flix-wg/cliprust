@@ -11,6 +11,8 @@ final class AppState {
     var excludes: [String] = []
     var stats: Stats?
     var lastError: String?
+    var pinnedLists = Prefs.pinnedLists { didSet { Prefs.pinnedLists = pinnedLists } }
+    var listOrder = Prefs.listOrder { didSet { Prefs.listOrder = listOrder } }
 
     init(core: Core?) {
         self.core = core
@@ -19,6 +21,14 @@ final class AppState {
     var userLists: [ClipList] { lists.filter { $0.name != Item.keysList } }
     var manualLists: [ClipList] { userLists.filter(\.manual) }
     var hasKeysList: Bool { lists.contains { $0.name == Item.keysList } }
+
+    /// User lists in the order set in Settings; lists not placed yet come last.
+    var orderedLists: [ClipList] {
+        let rank = Dictionary(listOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return userLists.enumerated()
+            .sorted { (rank[$0.element.name] ?? .max, $0.offset) < (rank[$1.element.name] ?? .max, $1.offset) }
+            .map(\.element)
+    }
 
     func refresh() async {
         guard let core else { return }
@@ -73,9 +83,10 @@ final class AppState {
         }
     }
 
+    /// Creates a manual list named `name` if there is none.
     func addToList(_ name: String, _ id: Int64) async {
         try? await core?.addToList(name, id)
-        await refreshPins()
+        if lists.contains(where: { $0.name == name }) { await refreshPins() } else { await refreshLists() }
     }
 
     func removeFromList(_ name: String, _ id: Int64) async {
@@ -83,15 +94,40 @@ final class AppState {
         await refreshPins()
     }
 
-    func createList(_ name: String) async -> Bool {
+    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil) async -> Bool {
         do {
-            try await core?.createList(name)
+            try await core?.createList(name, contains: text, kind: kind)
             await refreshLists()
             return true
         } catch {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    func togglePin(_ name: String) {
+        if pinnedLists.contains(name) { pinnedLists.removeAll { $0 == name } } else { pinnedLists.append(name) }
+    }
+
+    func renameList(_ name: String, to newName: String) async -> Bool {
+        do {
+            try await core?.renameList(name, newName)
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        pinnedLists = pinnedLists.map { $0 == name ? newName : $0 }
+        listOrder = listOrder.map { $0 == name ? newName : $0 }
+        if Prefs.lastFilter == ItemFilter.list(name).key { Prefs.lastFilter = ItemFilter.list(newName).key }
+        await refreshLists()
+        return true
+    }
+
+    func deleteList(_ name: String) async {
+        try? await core?.deleteList(name)
+        pinnedLists.removeAll { $0 == name }
+        listOrder.removeAll { $0 == name }
+        await refreshLists()
     }
 
     func addExclude(_ bundleID: String) async {

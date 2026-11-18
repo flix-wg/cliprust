@@ -26,6 +26,16 @@ enum PreviewRenderer {
                 render(view, size: Prefs.defaultPanelSize, appearance: appearance, to: dir.appendingPathComponent("\(shot)-\(suffix).png"))
             }
 
+            let palette = PanelModel(app: app)
+            palette.items = SampleData.items
+            palette.loaded = true
+            palette.isVisible = true
+            palette.selectedID = 1
+            palette.controlHeld = true
+            palette.palette = ListPalette(mode: .go, text: "")
+            render(PanelView(model: palette).environment(\.renderingPreview, true), size: Prefs.defaultPanelSize,
+                   appearance: appearance, to: dir.appendingPathComponent("panel-palette-\(suffix).png"))
+
             let keys = KeysModel(app: app, items: SampleData.items.filter(\.isSecret))
             keys.selection = [4]
             let keysHost = NSHostingController(rootView: KeysView(model: keys).environment(\.renderingPreview, true))
