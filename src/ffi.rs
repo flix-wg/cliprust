@@ -419,6 +419,15 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
                     .map_err(e)?
             )
         }
+        "rename_list" => {
+            #[derive(Deserialize)]
+            struct P {
+                name: String,
+                new_name: String,
+            }
+            let P { name, new_name } = params(p)?;
+            json!(store.rename_list(&name, &new_name).map_err(e)?)
+        }
         "delete_list" | "add_to_list" | "remove_from_list" => {
             #[derive(Deserialize)]
             struct P {
@@ -598,6 +607,18 @@ mod tests {
         assert_ne!(
             req("item", json!({"id": id}))["text"],
             "sk-live-secret-value"
+        );
+        req("create_list", json!({"name": "Work"}));
+        assert_eq!(
+            req("rename_list", json!({"name": "Work", "new_name": "Job"})),
+            json!(true)
+        );
+        assert!(
+            req("lists", Value::Null)
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l["name"] == "Job")
         );
         let paste = json!({"method": "paste_prep", "params": {"id": id}});
         assert!(call(&h, &paste.to_string()).is_err());

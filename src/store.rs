@@ -450,6 +450,13 @@ impl Store {
             > 0)
     }
 
+    pub fn rename_list(&self, name: &str, new_name: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE paste_lists SET name = ?2 WHERE name = ?1",
+            [name, new_name],
+        )? > 0)
+    }
+
     /// Adds an item to a manual list, creating the list if needed.
     pub fn add_to_list(&self, name: &str, item_id: i64, now: i64) -> Result<()> {
         let list_id = ensure_list(&self.conn, name)?;
