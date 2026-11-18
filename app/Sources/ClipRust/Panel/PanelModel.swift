@@ -141,6 +141,21 @@ final class PanelModel {
     @ObservationIgnored private var toastGeneration = 0
     /// The core's data version the items were loaded at; nil after a failed load.
     @ObservationIgnored private var loadedVersion: [Int]?
+    /// The search and filter the items were loaded for.
+    @ObservationIgnored private var loadedSearch: SearchState?
+    /// False while a reload is pending, so the items may not match the search field yet.
+    @ObservationIgnored private var settled = true
+    /// A pending reload resets the selection, also when a newer one replaces it.
+    @ObservationIgnored private var pendingReset = false
+    @ObservationIgnored private var whenSettled: (() -> Void)?
+
+    private struct SearchState: Equatable {
+        let query: String, source: String?, contact: ContactFilter?, filter: ItemFilter
+    }
+
+    private var searchState: SearchState {
+        SearchState(query: query, source: source?.bundleId, contact: contactToken, filter: filter)
+    }
 
     init(app: AppState) {
         self.app = app
@@ -208,7 +223,6 @@ final class PanelModel {
     func prepareForShow() {
         now = Date()
         contactCounts = nil
-        let shown = filter
         resetSearch()
         selectedID = items.first?.id
         guard let core = app.core else { return }
@@ -217,7 +231,7 @@ final class PanelModel {
         let deadline = DispatchTime.now() + .milliseconds(30)
         guard let versionResult = core.dataVersionSoon(by: deadline) else { return loadAfterShowing() }
         let version = try? versionResult.get()
-        guard smart || filter != shown || version == nil || version != loadedVersion else { return }
+        guard smart || loadedSearch != searchState || version == nil || version != loadedVersion else { return }
         var found: [Item]? = []
         if let scope = Self.scope(filter, hasKeys: app.hasKeysList) {
             guard let result = core.itemsSoon(kind: scope.kind, list: scope.list, contact: scope.contact,
@@ -225,7 +239,9 @@ final class PanelModel {
             found = try? result.get()
         }
         generation += 1 // drops the reloads the reset queued
+        (settled, pendingReset, whenSettled) = (true, false, nil)
         loadedVersion = found == nil ? nil : version
+        loadedSearch = searchState
         items = found ?? []
         loaded = true
         suggestion = nil
@@ -240,6 +256,7 @@ final class PanelModel {
 
     /// Resets the search while hidden and lets the WAL drain.
     func didHide() {
+        whenSettled = nil
         resetSearch()
         if let core = app.core { Task { await core.checkpoint() } }
     }
@@ -312,7 +329,10 @@ final class PanelModel {
         guard let core = app.core else { return }
         generation += 1
         let gen = generation
+        let resetSelection = resetSelection || pendingReset
+        (settled, pendingReset) = (false, resetSelection)
         let (q, f, token, tokenType, hasKeys) = (query, filter, source, contactToken, app.hasKeysList)
+        let search = searchState
         Task {
             if debounce { try? await Task.sleep(for: .milliseconds(60)) }
             guard gen == generation else { return }
@@ -344,7 +364,12 @@ final class PanelModel {
                                               contact: tokenType?.rawValue ?? scope.contact, limit: Self.pageSize)
             }
             guard gen == generation else { return }
+            (settled, pendingReset) = (true, false)
+            let action = whenSettled
+            whenSettled = nil
+            defer { action?() }
             loadedVersion = found == nil ? nil : version
+            loadedSearch = search
             items = found ?? []
             loaded = true
             suggestion = named == nil ? suggested : nil
@@ -364,6 +389,14 @@ final class PanelModel {
                     .joined(separator: " ")
             }
         }
+    }
+
+    /// Runs `action` once the items match the search field: now, or when the pending reload (started at
+    /// once, skipping its typing pause) lands; so ⏎ never picks a row of the previous search.
+    func whenCurrent(_ action: @escaping () -> Void) {
+        if settled { return action() }
+        whenSettled = action
+        reload()
     }
 
     /// Turns the suggestion into its token and drops its terms from the query.
@@ -422,12 +455,16 @@ final class PanelModel {
             if edit.field == .note { item.note = value } else { item.title = value }
         }
         if let i = items.firstIndex(where: { $0.id == edit.id }) { apply(&items[i]) }
+        let before = detail
         if detail?.id == edit.id { apply(&detail!) }
         Task {
             do {
                 if edit.field == .note { try await core.setNote(edit.id, value) } else { try await core.setTitle(edit.id, value) }
+                // The core may have masked a key in it.
+                if detail?.id == edit.id, let fresh = try? await core.item(edit.id) { detail = fresh }
             } catch {
                 NSSound.beep()
+                if detail?.id == edit.id, before?.id == edit.id { detail = before }
             }
             reload()
         }
