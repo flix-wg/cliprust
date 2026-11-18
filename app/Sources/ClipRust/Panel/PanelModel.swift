@@ -200,22 +200,30 @@ final class PanelModel {
         return nil
     }
 
-    /// Shows the items already in memory at once and reloads them only if the
-    /// store changed since (in any process) or the filter is a smart list, whose
-    /// rules may depend on the time.
+    /// Resets the search before the panel is drawn. The page in memory is kept unless the store changed
+    /// since (in any process), the filter changed, or it is a smart list, whose rules may depend on the
+    /// time; then it is reloaded on the spot (a millisecond or two) so the first frame is never stale.
     func prepareForShow() {
         now = Date()
         contactCounts = nil
+        let shown = filter
         resetSearch()
         selectedID = items.first?.id
         guard let core = app.core else { return }
-        let gen = generation
         var smart = false
         if case .list = filter { smart = currentManualList == nil }
-        Task {
-            let version = try? await core.dataVersion()
-            if gen == generation, smart || version == nil || version != loadedVersion { reload(resetSelection: true) }
+        let version = try? core.dataVersionNow()
+        guard smart || filter != shown || version == nil || version != loadedVersion else { return }
+        generation += 1 // drops the reloads the reset queued
+        var found: [Item]? = []
+        if let scope = Self.scope(filter, hasKeys: app.hasKeysList) {
+            found = try? core.itemsNow(kind: scope.kind, list: scope.list, contact: scope.contact, limit: Self.pageSize)
         }
+        loadedVersion = found == nil ? nil : version
+        items = found ?? []
+        loaded = true
+        suggestion = nil
+        selectedID = items.first?.id
     }
 
     /// Resets the search while hidden and lets the WAL drain.
@@ -274,7 +282,20 @@ final class PanelModel {
         }
     }
 
+    /// What a filter chip narrows to; nil for Keys while there are none.
+    private static func scope(_ f: ItemFilter, hasKeys: Bool) -> (kind: ItemKind?, list: String?, contact: String?)? {
+        switch f {
+        case .all: (nil, nil, nil)
+        case .contacts: (nil, nil, "any")
+        case .kind(let kind): (kind, nil, nil)
+        case .keys: hasKeys ? (nil, Item.keysList, nil) : nil
+        case .list(let name): (nil, name, nil)
+        }
+    }
+
     /// Typing reloads after a short pause; a newer reload abandons this one at its next step.
+    /// The core reads the query (`from:`, `is:` and plain words); the parse it returns here only
+    /// drives the suggestion row and turns settled `from:` and `is:` words into tokens.
     func reload(resetSelection: Bool = false, debounce: Bool = false) {
         guard let core = app.core else { return }
         generation += 1
@@ -284,20 +305,19 @@ final class PanelModel {
             if debounce { try? await Task.sleep(for: .milliseconds(60)) }
             guard gen == generation else { return }
             let version = try? await core.dataVersion()
+            let parsed = try? await core.parseQuery(q, app: token?.bundleId)
             let words = q.split(whereSeparator: \.isWhitespace).map(String.init)
-            let terms = words.filter { Self.contactType(in: $0) == nil }
-            let typed = words.last { Self.contactType(in: $0) != nil }
-            let contact = typed.flatMap(Self.contactType) ?? tokenType?.rawValue ?? (f == .contacts ? "any" : nil)
-            var named: AppSuggestion?
+            let terms = parsed.map { $0.text.split(separator: " ").map(String.init) } ?? words
+            let named = parsed.flatMap { p in p.app.flatMap { app in p.appTerm.map { AppSuggestion(app: app, term: $0) } } }
+            let typed = parsed?.contactTerms.last
             var suggested: Suggestion?
-            if token == nil { named = await Self.namedApp(in: terms, core: core) }
             guard gen == generation else { return }
             if tokenType == nil, typed == nil, let hit = ContactFilter.named(in: terms),
                let n = await loadContactCounts()[hit.0], n > 0 {
                 suggested = .contact(hit.0, count: n, terms: hit.1)
             }
             if token == nil, named == nil, suggested == nil {
-                for term in terms.prefix(6) where Self.appName(in: term) == nil && term.count >= 2 {
+                for term in terms.prefix(6) where term.count >= 2 {
                     guard gen == generation else { return }
                     if let hit = try? await core.apps(query: term).first {
                         suggested = .app(AppSuggestion(app: hit, term: term))
@@ -306,23 +326,10 @@ final class PanelModel {
                 }
             }
             guard gen == generation else { return }
-            let text = named == nil && terms.count == words.count ? q
-                : (named.map { n in terms.filter { $0 != n.term } } ?? terms).joined(separator: " ")
-            let bundle = token?.bundleId ?? named?.app.bundleId
-            let found: [Item]?
-            do {
-                switch f {
-                case .all, .contacts: found = try await core.items(query: text, app: bundle, contact: contact, limit: Self.pageSize)
-                case .kind(let kind):
-                    found = try await core.items(query: text, kind: kind, app: bundle, contact: contact, limit: Self.pageSize)
-                case .keys:
-                    found = hasKeys ? try await core.items(query: text, list: Item.keysList, app: bundle, contact: contact,
-                                                           limit: Self.pageSize) : []
-                case .list(let name):
-                    found = try await core.items(query: text, list: name, app: bundle, contact: contact, limit: Self.pageSize)
-                }
-            } catch {
-                found = nil
+            var found: [Item]? = []
+            if let scope = Self.scope(f, hasKeys: hasKeys) {
+                found = try? await core.items(query: q, kind: scope.kind, list: scope.list, app: token?.bundleId,
+                                              contact: tokenType?.rawValue ?? scope.contact, limit: Self.pageSize)
             }
             guard gen == generation else { return }
             loadedVersion = found == nil ? nil : version
@@ -336,41 +343,15 @@ final class PanelModel {
             // `from:mail ` / `@mail ` / `is:phone ` becomes a token once a space follows it.
             let settled = { (term: String?) in term.map { $0 != words.last || q.last?.isWhitespace == true } ?? false }
             let namedApp = settled(named?.term) ? named?.app : nil
-            let type = settled(typed) ? typed.flatMap(Self.contactType).flatMap(ContactFilter.init) : nil
+            let type = settled(typed) ? parsed?.contact.flatMap(ContactFilter.init) : nil
             if namedApp != nil || type != nil {
+                let contactTerms = parsed?.contactTerms ?? []
                 if let namedApp { source = namedApp }
                 if let type { contactToken = type }
-                query = words.filter { !(namedApp != nil && $0 == named?.term) && !(type != nil && Self.contactType(in: $0) != nil) }
+                query = words.filter { !(namedApp != nil && $0 == named?.term) && !(type != nil && contactTerms.contains($0)) }
                     .joined(separator: " ")
             }
         }
-    }
-
-    /// The first of the leading terms that names a stored app as `from:mail` or `@mail`.
-    static func namedApp(in terms: [String], core: Core) async -> AppSuggestion? {
-        for term in terms.prefix(6) {
-            if let name = appName(in: term), let hit = try? await core.apps(query: name).first {
-                return AppSuggestion(app: hit, term: term)
-            }
-        }
-        return nil
-    }
-
-    /// `is:phone`, `is:email`, `is:address`, or `is:contact` for any of them.
-    static func contactType(in term: String) -> String? {
-        switch term.lowercased() {
-        case "is:phone": "phone"
-        case "is:email": "email"
-        case "is:address": "address"
-        case "is:contact": "any"
-        default: nil
-        }
-    }
-
-    /// The app named by `from:mail` or `@mail`.
-    private static func appName(in term: String) -> String? {
-        let name = term.lowercased().hasPrefix("from:") ? term.dropFirst(5) : term.hasPrefix("@") ? term.dropFirst() : ""
-        return name.isEmpty ? nil : String(name)
     }
 
     /// Turns the suggestion into its token and drops its terms from the query.

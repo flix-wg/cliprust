@@ -133,15 +133,11 @@ extension PanelModel {
         case (.save(let name), _):
             let (q, kind, token, type, contacts) = (query, filter.kind, source, contactToken, filter == .contacts)
             Task {
-                // The same terms, `is:` type and pending `from:` app the search uses.
-                var terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
-                let contact = terms.compactMap(Self.contactType).last ?? type?.rawValue ?? (contacts ? "any" : nil)
-                terms.removeAll { Self.contactType(in: $0) != nil }
-                var bundle = token?.bundleId
-                if bundle == nil, let core = app.core, let named = await Self.namedApp(in: terms, core: core) {
-                    bundle = named.app.bundleId
-                    terms.removeAll { $0 == named.term }
-                }
+                // The core reads the query as the search does: its words, `is:` type and pending `from:` app.
+                guard let parsed = try? await app.core?.parseQuery(q, app: token?.bundleId) else { return NSSound.beep() }
+                let terms = parsed.text.split(separator: " ").map(String.init)
+                let contact = parsed.contact ?? type?.rawValue ?? (contacts ? "any" : nil)
+                let bundle = token?.bundleId ?? parsed.app?.bundleId
                 guard await app.createList(name, terms: terms, kind: kind, app: bundle, contact: contact) else { return NSSound.beep() }
                 clearSearch()
                 filter = .list(name)
