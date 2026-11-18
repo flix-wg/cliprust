@@ -162,6 +162,12 @@ impl Store {
     }
 
     pub fn get(&self, id: i64) -> Result<Option<Item>> {
+        // One snapshot, so the summary (and whether it is a key) matches the payloads.
+        let _snapshot = if self.conn.is_autocommit() {
+            Some(self.conn.unchecked_transaction()?)
+        } else {
+            None
+        };
         let Some(summary) = self.summary(id)? else {
             return Ok(None);
         };

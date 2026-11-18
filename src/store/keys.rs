@@ -5,7 +5,8 @@
 //! `key_check:<gen>` (tells a wrong key from corrupt data; kept for older
 //! generations until `prune_keys`), `key_old` (a generation a rotation still
 //! has to move off) and `scrub_pending` (plaintext may linger in free pages
-//! or the WAL until a VACUUM and a full checkpoint succeed).
+//! or the WAL until a VACUUM and a full checkpoint succeed; a counter, so a
+//! scrub only clears what it covered).
 //!
 //! Rotation never deletes a key from the key store: copies and backups of
 //! the database made before still need it. `prune_keys` does that on request.
@@ -19,7 +20,7 @@ use serde::Serialize;
 use zeroize::Zeroizing;
 
 use super::reps::{insert_reps, load_reps, wipe};
-use super::{OPTIMIZE_FTS, Store};
+use super::{OPTIMIZE_FTS, Store, file};
 use crate::crypto::{self, KeyError, KeySource, Subkeys};
 use crate::model::{Rep, format};
 use crate::{Error, Result, schema};
@@ -258,7 +259,7 @@ impl Store {
                 }
             }
             if sealed > 0 {
-                set_setting(&tx, SCRUB_PENDING, "1")?;
+                mark_scrub(&tx)?;
             }
             tx.commit()?;
         }
@@ -306,7 +307,7 @@ impl Store {
         let sealer = keys.mint(&tx)?;
         set_setting(&tx, "key_old", &old.to_string())?;
         if had_plain {
-            set_setting(&tx, SCRUB_PENDING, "1")?;
+            mark_scrub(&tx)?;
         }
         let ids: Vec<i64> = tx
             .prepare(
@@ -350,8 +351,18 @@ impl Store {
                 "the database is busy; quit other ClipRust processes and try again".into(),
             ));
         }
+        // A switch's rename that is not on disk could come back after a
+        // crash as the file before it, which needs its older key.
+        if let Some(path) = &self.path {
+            file::sync_dir(path).map_err(|e| {
+                Error::Refused(format!(
+                    "could not flush the database folder to disk ({e}); no key was deleted"
+                ))
+            })?;
+        }
         let current = current_gen(&self.conn)?;
-        let used = self.sealed_generations()?;
+        let mut used = self.sealed_generations()?;
+        used.extend(file::unsynced_swaps(&self.conn)?);
         let known: Vec<u32> = self
             .conn
             .prepare("SELECT CAST(substr(key, 11) AS INTEGER) FROM settings WHERE key LIKE 'key_check:%'")?
@@ -482,10 +493,10 @@ impl Store {
     /// or the WAL (`secure_delete` covers single deletes). Stays pending,
     /// and is retried on the next open, until the checkpoint completes.
     fn scrub(&self) -> Result<()> {
+        let seen = setting(&self.conn, SCRUB_PENDING)?;
         self.conn.execute_batch("VACUUM")?;
         if schema::checkpoint(&self.conn) {
-            self.conn
-                .execute("DELETE FROM settings WHERE key = ?1", [SCRUB_PENDING])?;
+            clear_scrub(&self.conn, seen.as_deref())?;
         }
         Ok(())
     }
@@ -500,7 +511,8 @@ impl Store {
 
     /// `value` with a key item's own value replaced by its masked form, so
     /// a title or note never holds the key in plaintext (or in the index).
-    /// Unchanged while the key cannot be read.
+    /// [`Error::Locked`] while the key cannot be read, since the value could
+    /// not be checked.
     pub(super) fn masked_label(&self, id: i64, value: Option<&str>) -> Result<Option<String>> {
         let Some(value) = value else { return Ok(None) };
         let masked: Option<String> = self
@@ -515,11 +527,7 @@ impl Store {
         let Some(masked) = masked else {
             return Ok(Some(value.to_owned()));
         };
-        let mut reps = match load_reps(&self.conn, &self.keys, id) {
-            Ok(reps) => reps,
-            Err(Error::Locked(_)) => return Ok(Some(value.to_owned())),
-            Err(e) => return Err(e),
-        };
+        let mut reps = load_reps(&self.conn, &self.keys, id)?;
         let out = match key_text(&reps) {
             Some(secret) => value.replace(secret, &masked),
             None => value.to_owned(),
@@ -657,6 +665,25 @@ fn key_text(reps: &[Rep]) -> Option<&str> {
 }
 
 const SCRUB_PENDING: &str = "scrub_pending";
+
+/// Flags a scrub, counting up so a scrub already running does not clear it.
+fn mark_scrub(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1') ON CONFLICT (key) \
+         DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+        [SCRUB_PENDING],
+    )?;
+    Ok(())
+}
+
+/// Clears the scrub flag only if it is still the value `seen` before the scrub.
+fn clear_scrub(conn: &Connection, seen: Option<&str>) -> Result<()> {
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1 AND value IS ?2",
+        params![SCRUB_PENDING, seen],
+    )?;
+    Ok(())
+}
 const UNFINISHED: &str =
     "the previous key rotation is not finished; quit other ClipRust processes and try again";
 
@@ -813,6 +840,18 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_scrub_keeps_the_flag_a_later_seal_raised() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .unwrap();
+        mark_scrub(&conn).unwrap();
+        let seen = setting(&conn, SCRUB_PENDING).unwrap();
+        mark_scrub(&conn).unwrap();
+        clear_scrub(&conn, seen.as_deref()).unwrap();
+        assert!(setting(&conn, SCRUB_PENDING).unwrap().is_some());
+    }
+
+    #[test]
     fn a_missing_key_locks_without_deleting_or_replacing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.db");
@@ -833,6 +872,7 @@ pub(super) mod tests {
         let status = s.encryption_status().unwrap();
         assert_eq!((status.keys, status.unreadable), (KeyState::Locked, 1));
         assert!(matches!(s.get(id), Err(Error::Locked(_))));
+        assert!(matches!(s.set_note(id, Some(VALUE)), Err(Error::Locked(_))));
         assert!(matches!(
             s.ingest(
                 &key_capture("ghp_Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0FeDcBa99"),

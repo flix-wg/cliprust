@@ -4,7 +4,8 @@
 //! - The mode is read from the header: `SQLite format 3\0` is plaintext,
 //!   anything else is encrypted. An encrypted file is opened with the `db`
 //!   subkey of whichever stored generation opens it, and never re-created.
-//! - Switching exports to `<db>.tmp`, checks the copy, and renames it over
+//! - Switching exports to `.<name>.cliprust-swap` beside the database
+//!   (a name no user database has), checks the copy, and renames it over
 //!   the database. It needs the only connection to the file (otherwise a
 //!   stale connection could later delete the new file's WAL by name), and
 //!   holds `<db>.lock` exclusively so nobody opens the old file meanwhile;
@@ -58,10 +59,18 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// The copy a switch writes before renaming it over `db`.
+fn swap_path(db: &Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(db.file_name().unwrap_or_default());
+    name.push(".cliprust-swap");
+    db.with_file_name(name)
+}
+
 /// Deletes the copy an interrupted switch left behind (in plaintext, when it
-/// was decrypting). Called with `<db>.lock` held, so no switch is running.
-pub(super) fn remove_stale_copy(db: &Path) -> Result<()> {
-    let tmp = with_suffix(db, ".tmp");
+/// was decrypting). Takes `<db>.lock`, so no switch is running.
+pub(super) fn remove_stale_copy(db: &Path, _held: &OpenLock) -> Result<()> {
+    let tmp = swap_path(db);
     for stale in [with_suffix(&tmp, "-journal"), tmp] {
         match std::fs::remove_file(stale) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
@@ -69,6 +78,27 @@ pub(super) fn remove_stale_copy(db: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Flushes the directory holding `db`, so a rename in it is on disk.
+pub(super) fn sync_dir(db: &Path) -> std::io::Result<()> {
+    let dir = match db.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    File::open(dir)?.sync_all()
+}
+
+/// Settings rows `swap_unsynced:<gen>`: generations of files a switch
+/// replaced without a directory sync, which a crash could bring back.
+const UNSYNCED_SWAP: &str = "swap_unsynced:";
+
+/// The generations [`UNSYNCED_SWAP`] rows keep.
+pub(super) fn unsynced_swaps(conn: &Connection) -> Result<Vec<u32>> {
+    Ok(conn
+        .prepare("SELECT CAST(substr(key, 15) AS INTEGER) FROM settings WHERE key LIKE 'swap_unsynced:%'")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 /// `(dev, ino)` of the file at `path`.
@@ -219,17 +249,21 @@ impl Store {
             .path
             .clone()
             .ok_or_else(|| Error::Refused("an in-memory database has no file".into()))?;
-        let _lock = OpenLock::exclusive(&path)?;
-        let tmp = with_suffix(&path, ".tmp");
-        if let Err(e) = self.export(&path, &tmp, sealer) {
-            let _ = remove_stale_copy(&path);
-            // Back to shared locking and WAL on the unchanged file.
-            self.conn.execute_batch("PRAGMA locking_mode = NORMAL")?;
-            self.conn
-                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
-            schema::configure(&self.conn)?;
-            return Err(e);
-        }
+        let lock = OpenLock::exclusive(&path)?;
+        let tmp = swap_path(&path);
+        let replaced = self.db_gen;
+        let synced = match self.export(&path, &tmp, sealer, &lock) {
+            Ok(synced) => synced,
+            Err(e) => {
+                let _ = remove_stale_copy(&path, &lock);
+                // Back to shared locking and WAL on the unchanged file.
+                self.conn.execute_batch("PRAGMA locking_mode = NORMAL")?;
+                self.conn
+                    .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+                schema::configure(&self.conn)?;
+                return Err(e);
+            }
+        };
         // The old connection now points at the replaced file; open the new one.
         // Should that fail, the old one must not delete the new WAL by name,
         // and the next call retries through `revalidate`.
@@ -238,11 +272,30 @@ impl Store {
             self.file_id = None;
             return Err(e);
         }
+        // Without the directory sync a crash could still bring back the file
+        // just replaced, so `prune_keys` keeps its key until a later switch
+        // syncs.
+        if synced {
+            self.conn
+                .execute("DELETE FROM settings WHERE key LIKE 'swap_unsynced:%'", [])?;
+        } else if let Some(g) = replaced {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, '')",
+                [format!("{UNSYNCED_SWAP}{g}")],
+            )?;
+        }
         Ok(())
     }
 
-    fn export(&self, path: &Path, tmp: &Path, sealer: Option<&Sealer>) -> Result<()> {
-        remove_stale_copy(path)?;
+    /// Returns whether the directory sync after the rename succeeded.
+    fn export(
+        &self,
+        path: &Path,
+        tmp: &Path,
+        sealer: Option<&Sealer>,
+        lock: &OpenLock,
+    ) -> Result<bool> {
+        remove_stale_copy(path, lock)?;
         let conn = &self.conn;
         // Leaving WAL mode needs the only connection; exclusive locking then
         // keeps everyone else out until this connection closes.
@@ -326,10 +379,7 @@ impl Store {
         // The switch has happened; a failed directory sync only makes the
         // rename less durable, so it must not send the caller down the
         // path that keeps the old connection.
-        if let Some(dir) = path.parent() {
-            let _ = File::open(dir).and_then(|d| d.sync_all());
-        }
-        Ok(())
+        Ok(sync_dir(path).is_ok())
     }
 }
 
@@ -372,6 +422,9 @@ mod tests {
         let path = dir.path().join("t.db");
         let keys: Arc<dyn KeySource> = Arc::new(MemoryKeys::default());
         let open = || Store::open_with_keys(&path, Some(keys.clone()));
+        // Another database that happens to sit beside it is left alone.
+        let neighbour = dir.path().join("t.db.tmp");
+        std::fs::write(&neighbour, "another database").unwrap();
         let mut s = open().unwrap();
         let note = "meeting notes about the quarterly budget";
         s.ingest(&Capture::from_text(note.into()), 1).unwrap();
@@ -412,6 +465,7 @@ mod tests {
 
         s.set_db_encryption(false).unwrap();
         assert!(!is_encrypted(&path).unwrap());
+        assert!(neighbour.exists());
         let v: i64 = s
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))

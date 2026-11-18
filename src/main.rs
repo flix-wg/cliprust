@@ -303,13 +303,21 @@ fn run(cli: Cli) -> CliResult {
             print_items(&store.find(&find, limit, 0)?);
         }
         Cmd::Show { id, reveal } => {
+            let masked = |summary: &ItemSummary| {
+                println!("{}", summary.preview.as_deref().unwrap_or_default());
+                eprintln!("#{id} is a key; add --reveal to print its value");
+            };
             let summary = store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
             if summary.secret_kind == Some(SecretKind::Key) && !reveal {
-                println!("{}", summary.preview.unwrap_or_default());
-                eprintln!("#{id} is a key; add --reveal to print its value");
+                masked(&summary);
                 return Ok(());
             }
             let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            // Decided again on the fetched row: it may have become a key meanwhile.
+            if item.summary.secret_kind == Some(SecretKind::Key) && !reveal {
+                masked(&item.summary);
+                return Ok(());
+            }
             match item.text() {
                 Some(text) => println!("{text}"),
                 None => {
@@ -324,12 +332,17 @@ fn run(cli: Cli) -> CliResult {
             }
         }
         Cmd::Copy { id, plain, reveal } => {
+            let refuse = || format!("#{id} is a key; add --reveal to copy its value");
             let summary = store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
-            let is_key = summary.secret_kind == Some(SecretKind::Key);
-            if is_key && !reveal {
-                return Err(format!("#{id} is a key; add --reveal to copy its value").into());
+            if summary.secret_kind == Some(SecretKind::Key) && !reveal {
+                return Err(refuse().into());
             }
             let item = store.get(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            // Decided on the fetched row, which may have become a key meanwhile.
+            let is_key = item.summary.secret_kind == Some(SecretKind::Key);
+            if is_key && !reveal {
+                return Err(refuse().into());
+            }
             let ctx = clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?;
             match item.text() {
                 Some(value) if is_key => capture::write_secret(&ctx, value)?,

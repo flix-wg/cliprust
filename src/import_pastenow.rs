@@ -163,7 +163,11 @@ pub fn import(store: &mut Store, store_path: &Path) -> Result<ImportReport> {
                 !t.trim().is_empty() && !(detect_keys && crate::secrets::detect(t).is_some())
             })
         {
-            store.set_title(id, Some(title))?;
+            // A key item that is locked keeps its title rather than failing the import.
+            match store.set_title(id, Some(title)) {
+                Ok(_) | Err(crate::Error::Locked(_)) => {}
+                Err(e) => return Err(e),
+            }
         }
         if let Some(list) = list {
             members.entry(list).or_default().push((id, now));

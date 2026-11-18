@@ -82,8 +82,8 @@ impl Store {
         }
         let keys = keys::Keyring::new(keys);
         let (conn, db_gen, file_id) = {
-            let _lock = file::OpenLock::shared(path)?;
-            file::remove_stale_copy(path)?;
+            let lock = file::OpenLock::shared(path)?;
+            file::remove_stale_copy(path, &lock)?;
             let (conn, db_gen) = file::connect(path, &keys)?;
             schema::configure(&conn)?;
             (conn, db_gen, file::id(path))

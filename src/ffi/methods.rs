@@ -192,6 +192,10 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
                 return Err(Error::new(Code::Invalid, "item is a key"));
             }
             let item = store.get(id)?.ok_or_else(no_item)?;
+            // Checked again on the fetched row: it may have become a key meanwhile.
+            if is_masked(&item.summary) {
+                return Err(Error::new(Code::Invalid, "item is a key"));
+            }
             platform::with_autorelease_pool(|| -> R<()> {
                 let ctx = clipboard_rs::ClipboardContext::new()
                     .map_err(|e| Error::new(Code::Io, e.to_string()))?;
