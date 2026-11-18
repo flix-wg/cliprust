@@ -144,6 +144,12 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
   - Detect API keys and IDs
   - Require Touch ID to reveal or copy keys
   - Look up the browser page when a key is copied (explains the one-time Automation prompt)
+- **Security:**
+  - Saved keys: status (encrypted, none yet, locked or unavailable) and how many still wait to be encrypted
+  - Encryption key: Rotate… (confirm); Old keys: Remove… (confirm; older copies then need their recovery code)
+  - Recovery code: Show… always asks for Touch ID or the password, then Copy (concealed) or Hide; Restore key from a pasted code
+  - Unreadable keys: Forget… (confirm), shown only while some exist
+  - Encrypt the whole database (confirm; warns that older backups and snapshots keep the old data)
 - **Import:** Import from PasteNow… (shows counts when done) and the database location with "Show in Finder".
 
 ## Architecture
@@ -211,7 +217,8 @@ A small C ABI carries JSON requests and responses, so Swift decodes them with `C
 typedef struct CrHandle CrHandle;
 typedef void (*cr_event_cb)(const char *event_json, void *ctx);
 
-CrHandle   *cr_open(const char *db_path /* NULL = default */, char **err_out);
+CrHandle   *cr_open(const char *db_path /* NULL = default */, char **err_out); // err_out: {"code", "message"}
+int64_t     cr_restore_key(const char *db_path, const char *code, char **err_out); // generation, or -1
 char       *cr_call(const CrHandle *h, const char *request_json); // always returns JSON, caller frees
 int32_t     cr_item_data(const CrHandle *h, int64_t id, const char *format, uint8_t **out, size_t *len);
 void        cr_watch(const CrHandle *h, cr_event_cb cb, void *ctx); // starts the watcher thread once
@@ -260,14 +267,17 @@ void        cr_close(CrHandle *h);
 | `import_pastenow` | `{path?}` → counts |
 | `encryption_status` | → `{keys, generation?, message?, pending, unreadable, db_encrypted, db_encryption_available}`; `keys` is `ready`, `no_key`, `locked`, `unavailable` or `unsupported` |
 | `set_db_encryption` | `{on}` encrypts the database file with SQLCipher or decrypts it → status; `invalid` while another process has the file open |
-| `rotate_key` | → the new key generation; re-seals every key and re-keys an encrypted file |
+| `rotate_key` | → the new key generation; re-seals every key and re-keys an encrypted file. The old key stays in the Keychain for older copies |
+| `prune_keys` | deletes older generations no row or file uses from the Keychain, after a completed checkpoint → their generations; `invalid` while busy |
 | `recovery_code` | → the master key as `cliprust-key-<gen>-<hex>` (Swift gates it behind LocalAuthentication) |
 | `restore_key` | `{code}` puts the key back after checking it belongs to this database → its generation |
 | `forget_unreadable_keys` | deletes the key items whose key is missing → number deleted; only then can a new key be created |
 
 **Details:**
 - **Events:** `{"type": "stored", "id": 12, "new": true, "kind": "text", "secret": false, "secret_kind": null}` · `{"type": "skipped", "reason": "..."}` · `{"type": "secret_skipped", "reason": "..."}` (a copied key was not stored because its key is unavailable; it is still on the clipboard) · `{"type": "failed", "error": "..."}`. Swift refreshes the visible page on `stored`.
-- **Own changes:** after writing the pasteboard itself (a revealed key), the app calls `cr_own_change` with the new change count so the watcher does not store it again.
+- **Own changes:** after writing the pasteboard itself (a revealed key), the app calls `cr_own_change` with the count `clearContents` returned, so the watcher does not store it again; reading `changeCount` after the write could adopt another app's copy. The core's `paste_prep` marks its write only when it was the single change.
+- **Opening a locked database:** when `cr_open` fails with `locked` (an encrypted file that no Keychain key opens), the app asks for a recovery code, passes it to `cr_restore_key` and opens again.
+- **Notices:** the panel shows a notice while `encryption_status` reports unreadable keys (with an inline confirm for `forget_unreadable_keys`) and after a `secret_skipped` event until dismissed.
 - **Connections:** the handle holds one `Arc<Mutex<Store>>` that calls and the watcher thread share, so the app has a single connection; switching database encryption needs it to be the only one.
 - **Main thread:** `Core` hops to a serial `DispatchQueue` and back. The one exception is opening the panel, which waits up to 30 ms for `data_version` and, if needed, the first page so the first frame is current; when the queue is busy it shows the page it has and reloads right after.
 

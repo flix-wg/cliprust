@@ -22,7 +22,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 ### Capture and privacy
 
-- **Keys stay hidden.** API keys and tokens are recognised, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them.
+- **Keys stay hidden.** API keys and tokens are recognised, encrypted on disk with a key kept in your login Keychain, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them. The whole history can be encrypted too; see [SECURITY.md](SECURITY.md) for what this protects against.
 - **Respects privacy.** Skips content that password managers mark as concealed, and any apps you exclude.
 - **Every format.** Plain text, RTF, HTML, images and files, deduplicated and compressed with zstd.
 - **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.

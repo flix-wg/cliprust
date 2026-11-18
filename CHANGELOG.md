@@ -29,4 +29,14 @@ First public release.
 - Preview pane with Quick Look and images capped at 800 px.
 - Settings for retention, exclusions, key detection, launch at login and every panel shortcut.
 
+### Security
+
+- Detected API keys are encrypted at rest (XChaCha20-Poly1305) with a master key in the login Keychain; their checksums are keyed, and the search index never holds them.
+- Optional encryption of the whole database with SQLCipher (CommonCrypto), from Settings → Security or `cliprust encryption on`.
+- Key rotation keeps the old key for older copies until `cliprust keys prune` or Settings removes it; recovery codes restore a key on another Mac, also before an encrypted database can open.
+- A missing key locks saved keys instead of deleting them; the panel explains it and offers to forget them.
+- `cliprust show` and `cliprust copy` need `--reveal` for keys; the CLI copies keys as concealed.
+- Quick Look copies are deleted when the panel closes.
+- [SECURITY.md](SECURITY.md) describes the threat model and how to report a vulnerability.
+
 [0.1.0]: https://github.com/flix-wg/cliprust/releases/tag/v0.1.0
