@@ -3,6 +3,8 @@ name = "cliprust"
 version = "0.1.0"
 edition = "2024"
 description = "Low-memory clipboard history core with SQLite FTS5 search"
+license = "MIT"
+repository = "https://github.com/flix-wg/cliprust"
 publish = false
 
 [lib]

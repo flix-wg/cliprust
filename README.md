@@ -1,62 +1,75 @@
-# cliprust
+# ClipRust
 
-A low-memory clipboard history for macOS, written as a Rust core with a CLI.
-A native SwiftUI shell will sit on top of the same library. The aim is to
-replace PasteNow with something that has no helper process, no telemetry and
-real full-text search.
+A fast, low-memory clipboard history for macOS. A Rust core handles capture, storage and search; a native SwiftUI app sits on top.
 
-## What it does
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
+  <img alt="The ClipRust panel" src="docs/images/panel-light.png" width="680">
+</picture>
 
-- Watches the clipboard and stores every representation of a copy (plain
-  text, RTF, HTML, images, file lists) with the app it came from.
-- Deduplicates on ingest. Copying something again moves the existing item to
-  the top instead of adding a second one.
-- Compresses payloads with zstd and keeps them out of the table used for
-  listing.
-- Searches with an FTS5 trigram index, so any substring of three or more
-  characters matches. Shorter terms fall back to a scan.
-- Skips content that password managers mark as concealed or transient, and
-  apps you exclude.
-- Manual lists, plus smart lists defined by JSON rules.
-- Retention by item count or age. Items in manual lists are always kept.
-- Optional key detection: recognises API keys and tokens, names them from
-  `NAME=value` or the page they came from, and files them in a Keys list.
-  Search and previews only ever see a masked form. Unprefixed keys take the
-  site name as provider. IDs copied from a web page (UUIDs, hex IDs such as
-  Cloudflare zone IDs) are kept unmasked in an IDs list.
-- Notes on any item, included in search.
-- Imports an existing PasteNow history.
+## Features
 
-## Usage
+- **Search everything.** Full-text search over all history, not only previews.
+- **Search by app.** Type `mail` or `codex` to filter by the app you copied from, or use `from:mail`.
+- **Lists.** Manual lists, saved searches, pinned items. Jump between them from the keyboard.
+- **Keys stay hidden.** API keys and tokens are recognised, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them.
+- **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.
+- **Every format.** Plain text, RTF, HTML, images and files, deduplicated and compressed with zstd.
+- **Respects privacy.** Skips content that password managers mark as concealed, and any apps you exclude.
+- **Imports PasteNow.** Brings over your history and lists.
+
+## Shortcuts
+
+| Key | Action |
+| --- | --- |
+| ⇧⌘V | Open the panel (⌥⇧⌘V while PasteNow is running) |
+| ⏎ / ⌥⏎ / ⌘⏎ | Paste / paste as plain text / copy only |
+| ⌘1 … ⌘9 | Paste row N |
+| ⌘L | Go to a list or app |
+| ⌃1 … ⌃9 | Jump to filter N |
+| ⌘D | Add to list |
+| ⌘⇧P | Pin |
+| ⌘⇧S | Save search as list |
+| ␣ | Quick Look |
+| ⌘K | Keys & IDs |
+
+All shortcuts are listed in [docs/app-design.md](docs/app-design.md).
+
+## Build
+
+Requires macOS 26, Xcode 26 and a Rust toolchain.
 
 ```sh
-cliprust watch                          # record until interrupted
-cliprust list -n 20
+app/scripts/build-app.sh        # → app/build/ClipRust.app
+```
+
+Set `CLIPRUST_SIGN_IDENTITY` to sign with your own certificate. Pasting into other apps needs Accessibility permission, which macOS asks for on first use.
+
+## CLI
+
+The core also ships as a command-line tool that works on the same database:
+
+```sh
+cargo install --path .
 cliprust search invoice 2024
-cliprust copy 42 [--plain]              # put item 42 back on the clipboard
-cliprust lists add Links --rule '{"type":"kind","kind":"url"}'
-cliprust lists put Snippets 42
-cliprust exclude add com.agilebits.onepassword7
-cliprust settings detect-keys on
-cliprust keys [--provider P] [--site cloudflare.com] [--ids|--all] [--group]
-cliprust keys facets                    # providers and sites with counts
-cliprust note 42 staging account        # no text removes the note
+cliprust copy 42 --plain
+cliprust keys --provider cloudflare
 cliprust import-pastenow
 ```
 
-The database lives in `~/Library/Application Support/cliprust/cliprust.db`;
-set `CLIPRUST_DB` or `--db` to use another file.
+Run `cliprust --help` for the full list. Data lives in `~/Library/Application Support/cliprust/cliprust.db`; override it with `CLIPRUST_DB`.
 
-Smart-list rules combine `all`, `any` and `not` with `kind`, `app`,
-`contains`, `copied_within` (seconds), `created_today`, `larger_than` (bytes)
-and `secret`.
+## Layout
+
+```
+src/        Rust core: capture, SQLite store, search, rules, key detection, C API
+app/        SwiftUI app (Swift package) and build script
+docs/       Design notes
+```
 
 ## Development
 
 ```sh
-cargo test
-xvfb-run cargo test -- --ignored        # live clipboard round trip (Linux)
+cargo test --features ffi
+cargo clippy --all-targets --features ffi -- -D warnings
 ```
-
-The macOS-only code (frontmost app, browser page lookup, run loop) builds on
-Linux with `cargo zigbuild --target aarch64-apple-darwin --lib`.

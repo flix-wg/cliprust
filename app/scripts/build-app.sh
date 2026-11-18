@@ -4,7 +4,8 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$APP_DIR/.." && pwd)"
-IDENTITY="${CLIPRUST_SIGN_IDENTITY:-Apple Development: Felix Wegener (6NH6KBTA54)}"
+IDENTITY="${CLIPRUST_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n "s/.*\"\(Apple Development: [^\"]*\)\".*/\1/p" | head -1)}"
+IDENTITY="${IDENTITY:--}"
 VERSION="0.1.0"
 OUT="$APP_DIR/build/ClipRust.app"
 
@@ -50,7 +51,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAppleEventsUsageDescription</key><string>ClipRust reads the address of the current browser page when you copy an API key, so you can tell keys apart later.</string>
-    <key>NSHumanReadableCopyright</key><string>Felix Wegener</string>
+    <key>NSHumanReadableCopyright</key><string>MIT License</string>
 </dict>
 </plist>
 PLIST
