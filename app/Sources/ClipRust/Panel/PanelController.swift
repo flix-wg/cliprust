@@ -361,8 +361,12 @@ final class PanelController: NSObject, NSWindowDelegate {
             return
         }
         guard !item.isSecret else { NSSound.beep(); return }
+        let request = quickLook.newRequest()
         Task {
-            guard let url = await quickLook.prepare(item, core: app.core, detail: model.detail) else {
+            let url = await quickLook.prepare(item, core: app.core, detail: model.detail, request: request)
+            // Closed, or asked again, while it waited: no preview.
+            guard quickLook.isCurrent(request), panel.isVisible else { return }
+            guard let url else {
                 NSSound.beep()
                 return
             }
