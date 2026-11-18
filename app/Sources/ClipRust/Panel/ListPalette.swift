@@ -19,7 +19,7 @@ struct ListPalette: Equatable {
 }
 
 enum PaletteRow: Hashable {
-    case filter(ItemFilter), create(String), save(String)
+    case filter(ItemFilter), app(SourceApp), create(String), save(String)
 }
 
 extension ItemFilter {
@@ -47,6 +47,7 @@ extension ItemFilter {
         case .kind(.image): "photo"
         case .kind(.file): "doc"
         case .keys: "key.horizontal"
+        case .list(Item.pinnedList): "pin"
         case .list: "list.bullet"
         }
     }
@@ -70,9 +71,11 @@ extension PanelModel {
             palette = nil
             return true
         }
-        let text = mode == .saveSearch ? query.trimmingCharacters(in: .whitespaces) : ""
+        let typed = query.trimmingCharacters(in: .whitespaces)
+        let text = mode == .saveSearch ? (typed.isEmpty ? source?.title ?? "" : typed) : ""
         if mode == .saveSearch, text.isEmpty { return false }
         palette = ListPalette(mode: mode, text: text)
+        if mode == .go { Task { await app.refreshApps() } }
         return true
     }
 
@@ -81,9 +84,13 @@ extension PanelModel {
         let text = palette.text.trimmingCharacters(in: .whitespaces)
         switch palette.mode {
         case .go:
-            return ranked(filters(), text)
+            let lists = ranked(filters(), text) { [$0.title] }
+            let apps = ranked(app.apps, text) { [$0.title, String($0.bundleId.split(separator: ".").last ?? "")] }
+            return lists.map(PaletteRow.filter) + apps.map(PaletteRow.app) + creatable(lists, text)
         case .add:
-            return ranked(app.orderedLists.filter { $0.manual && $0.name != Item.idsList }.map { .list($0.name) }, text)
+            let manual = app.orderedLists.filter { $0.manual && $0.name != Item.idsList }.map { ItemFilter.list($0.name) }
+            let lists = ranked(manual, text) { [$0.title] }
+            return lists.map(PaletteRow.filter) + creatable(lists, text)
         case .saveSearch:
             return text.isEmpty || isTaken(text) ? [] : [.save(text)]
         }
@@ -104,13 +111,17 @@ extension PanelModel {
         case (.filter(let f), .add(let id)): add(id, to: f.title)
         case (.create(let name), .add(let id)): add(id, to: name)
         case (.filter(let f), _): filter = f
+        case (.app(let a), _):
+            query = ""
+            filter = .all
+            source = a
         case (.create(let name), _):
             Task { if await app.createList(name) { filter = .list(name) } else { NSSound.beep() } }
         case (.save(let name), _):
-            let (text, kind) = (query.trimmingCharacters(in: .whitespaces), filter.kind)
+            let (text, kind, bundle) = (query.trimmingCharacters(in: .whitespaces), filter.kind, source?.bundleId)
             Task {
-                guard await app.createList(name, contains: text, kind: kind) else { return NSSound.beep() }
-                query = ""
+                guard await app.createList(name, contains: text.isEmpty ? nil : text, kind: kind, app: bundle) else { return NSSound.beep() }
+                clearSearch()
                 filter = .list(name)
             }
         }
@@ -136,13 +147,18 @@ extension PanelModel {
         ([Item.keysList, Item.idsList] + app.lists.map(\.name)).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
-    private func ranked(_ filters: [ItemFilter], _ text: String) -> [PaletteRow] {
-        guard !text.isEmpty else { return filters.map(PaletteRow.filter) }
-        let hits = filters.filter { $0.title.localizedCaseInsensitiveContains(text) }
-        let prefix = hits.filter { $0.title.lowercased().hasPrefix(text.lowercased()) }
-        let rows = (prefix + hits.filter { !prefix.contains($0) }).map(PaletteRow.filter)
-        let exact = filters.contains { $0.title.caseInsensitiveCompare(text) == .orderedSame }
-        return exact || isTaken(text) ? rows : rows + [.create(text)]
+    /// Prefix matches of any key first, then substring matches.
+    private func ranked<T>(_ all: [T], _ text: String, _ keys: (T) -> [String]) -> [T] {
+        guard !text.isEmpty else { return all }
+        let t = text.lowercased()
+        let hits = all.filter { keys($0).contains { $0.lowercased().contains(t) } }
+        let prefix = hits.map { keys($0).contains { $0.lowercased().hasPrefix(t) } }
+        return zip(hits, prefix).filter(\.1).map(\.0) + zip(hits, prefix).filter { !$0.1 }.map(\.0)
+    }
+
+    private func creatable(_ lists: [ItemFilter], _ text: String) -> [PaletteRow] {
+        let exact = lists.contains { $0.title.caseInsensitiveCompare(text) == .orderedSame }
+        return text.isEmpty || exact || isTaken(text) ? [] : [.create(text)]
     }
 }
 
@@ -151,10 +167,12 @@ struct ListPaletteView: View {
     @FocusState private var focused: Bool
 
     private static let rowHeight: CGFloat = 26
+    private static let headerHeight: CGFloat = 24
 
     var body: some View {
         let rows = model.paletteRows
         let selection = model.palette?.selection ?? 0
+        let firstApp = rows.firstIndex { if case .app = $0 { true } else { false } }
         VStack(spacing: 0) {
             TextField(model.palette?.placeholder ?? "", text: Binding(get: { model.palette?.text ?? "" },
                                                                      set: { model.palette?.text = $0 }))
@@ -169,6 +187,15 @@ struct ListPaletteView: View {
                     ScrollView {
                         VStack(spacing: 1) {
                             ForEach(Array(rows.enumerated()), id: \.element) { i, row in
+                                if i == firstApp {
+                                    Text("Apps")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 8)
+                                        .padding(.bottom, 3)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                                        .frame(height: Self.headerHeight)
+                                }
                                 PaletteRowView(row: row, mode: model.palette?.mode ?? .go, hint: hint(row),
                                                smart: isSmart(row), selected: i == selection)
                                     .id(i)
@@ -177,7 +204,8 @@ struct ListPaletteView: View {
                         }
                         .padding(5)
                     }
-                    .frame(height: CGFloat(min(rows.count, 8)) * (Self.rowHeight + 1) + 9)
+                    .frame(height: CGFloat(min(rows.count, 8)) * (Self.rowHeight + 1) + 9
+                        + (firstApp.map { $0 < 8 ? Self.headerHeight + 1 : 0 } ?? 0))
                     .onChange(of: selection) { _, i in proxy.scrollTo(i) }
                 }
             }
@@ -194,6 +222,7 @@ struct ListPaletteView: View {
     }
 
     private func hint(_ row: PaletteRow) -> String? {
+        if case .app(let a) = row { return "\(a.count)" }
         guard model.palette?.mode == .go, case .filter(let f) = row,
               let i = model.filters().firstIndex(of: f), i < 9 else { return nil }
         return "⌃\(i + 1)"
@@ -215,10 +244,14 @@ private struct PaletteRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
+            Group {
+                if case .app(let a) = row {
+                    AppIconView(bundleID: a.bundleId)
+                } else {
+                    Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 16)
             Text(title).font(.system(size: 13)).lineLimit(1)
             Spacer(minLength: 4)
             if let hint {
@@ -235,6 +268,7 @@ private struct PaletteRowView: View {
     private var symbol: String {
         switch row {
         case .filter(let f): smart ? "line.3.horizontal.decrease" : f.symbol
+        case .app: "app"
         case .create: "plus"
         case .save: "line.3.horizontal.decrease"
         }
@@ -243,6 +277,7 @@ private struct PaletteRowView: View {
     private var title: String {
         switch row {
         case .filter(let f): f.title
+        case .app(let a): a.title
         case .create(let name): if case .add = mode { "Create “\(name)” and add" } else { "Create list “\(name)”" }
         case .save(let name): "Save search as “\(name)”"
         }

@@ -1,5 +1,6 @@
 import CCliprust
 import Foundation
+import Synchronization
 
 struct CoreError: LocalizedError {
     let message: String
@@ -11,6 +12,10 @@ final class Core: @unchecked Sendable {
     private let handle: OpaquePointer
     private let queue: DispatchQueue
     private var onEvent: (@MainActor (CoreEvent) -> Void)?
+    /// Bumped by every call that may change items and by every stored clip.
+    let revision = Atomic<Int>(0)
+    private static let reads: Set<String> = ["items", "item", "apps", "secrets", "secret_facets", "lists", "list_ids",
+                                             "settings", "excludes", "stats", "reveal_key"]
 
     static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -49,6 +54,7 @@ final class Core: @unchecked Sendable {
         let envelope = try JSONSerialization.jsonObject(with: Data(bytes: out, count: strlen(out)))
         guard let dict = envelope as? [String: Any] else { throw CoreError(message: "Malformed response.") }
         if let err = dict["err"] as? String { throw CoreError(message: err) }
+        if !Self.reads.contains(method) { revision.wrappingAdd(1, ordering: .relaxed) }
         return try JSONSerialization.data(withJSONObject: dict["ok"] ?? NSNull(), options: .fragmentsAllowed)
     }
 
@@ -87,6 +93,7 @@ final class Core: @unchecked Sendable {
             let core = Unmanaged<Core>.fromOpaque(ctx).takeUnretainedValue()
             let data = Data(bytes: json, count: strlen(json))
             guard let event = try? Core.decoder.decode(CoreEvent.self, from: data) else { return }
+            if event.type == "stored" { core.revision.wrappingAdd(1, ordering: .relaxed) }
             DispatchQueue.main.async { MainActor.assumeIsolated { core.onEvent?(event) } }
         }, ctx)
     }
@@ -97,13 +104,20 @@ final class Core: @unchecked Sendable {
 }
 
 extension Core {
-    func items(query: String? = nil, kind: ItemKind? = nil, list: String? = nil, limit: Int) async throws -> [Item] {
+    func items(query: String? = nil, kind: ItemKind? = nil, list: String? = nil, app: String? = nil, limit: Int) async throws -> [Item] {
         var p: [String: Any] = ["limit": limit]
         if let query, !query.isEmpty { p["query"] = query }
         if let kind { p["kind"] = kind.rawValue }
         if let list { p["list"] = list }
+        if let app { p["app"] = app }
         return try await call("items", p)
     }
+
+    /// Apps of stored items, most copied first; a query keeps the matching ones, best first.
+    func apps(query: String? = nil) async throws -> [SourceApp] {
+        try await call("apps", query.map { ["query": $0] } ?? [:])
+    }
+    func listIDs(_ name: String) async throws -> [Int64] { try await call("list_ids", ["name": name]) }
 
     /// Keys and IDs together; the Keys window facets them itself.
     func secrets(limit: Int) async throws -> [Item] { try await call("secrets", ["limit": limit]) }
@@ -118,12 +132,14 @@ extension Core {
         try await run("set_note", ["id": id, "note": note.map { $0 as Any } ?? NSNull()])
     }
     func lists() async throws -> [ClipList] { try await call("lists") }
-    /// With `contains`, a smart list matching that text (and `kind`, if given).
-    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil) async throws {
+    /// With `contains` or `app`, a smart list matching them (and `kind`, if given).
+    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil, app: String? = nil) async throws {
         var p: [String: Any] = ["name": name]
-        if let text {
-            var rules: [[String: Any]] = [["type": "contains", "text": text]]
+        if text != nil || app != nil {
+            var rules: [[String: Any]] = []
+            if let text { rules.append(["type": "contains", "text": text]) }
             if let kind { rules.append(["type": "kind", "kind": kind.rawValue]) }
+            if let app { rules.append(["type": "app", "bundle_id": app]) }
             p["rule"] = ["type": "all", "rules": rules]
         }
         try await run("create_list", p)
@@ -142,11 +158,5 @@ extension Core {
     func importPasteNow() async throws -> ImportResult { try await call("import_pastenow") }
 
     /// The stored bitmap of an image item, whichever format it was copied in.
-    func imageData(_ id: Int64) async -> Data? {
-        guard let formats = try? await item(id).formats else { return nil }
-        for format in formats where format.hasPrefix("public.") {
-            if let data = await data(id: id, format: format) { return data }
-        }
-        return nil
-    }
+    func imageData(_ id: Int64) async -> Data? { await data(id: id, format: "image") }
 }

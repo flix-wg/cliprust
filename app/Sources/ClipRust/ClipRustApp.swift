@@ -80,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handle(_ event: CoreEvent) {
         guard event.type == "stored" else { return }
         state?.itemStored(secret: event.secret == true)
-        if panel?.isVisible == true { panel?.model.reload() }
+        panel?.model.itemStored()
         keysWindow.reloadIfOpen()
     }
 

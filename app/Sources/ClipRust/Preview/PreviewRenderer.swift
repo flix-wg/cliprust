@@ -26,15 +26,33 @@ enum PreviewRenderer {
                 render(view, size: Prefs.defaultPanelSize, appearance: appearance, to: dir.appendingPathComponent("\(shot)-\(suffix).png"))
             }
 
-            let palette = PanelModel(app: app)
-            palette.items = SampleData.items
-            palette.loaded = true
-            palette.isVisible = true
-            palette.selectedID = 1
-            palette.controlHeld = true
-            palette.palette = ListPalette(mode: .go, text: "")
-            render(PanelView(model: palette).environment(\.renderingPreview, true), size: Prefs.defaultPanelSize,
-                   appearance: appearance, to: dir.appendingPathComponent("panel-palette-\(suffix).png"))
+            for (shot, text, held) in [("panel-palette", "", true), ("panel-palette-apps", "ma", false)] {
+                let palette = PanelModel(app: app)
+                palette.items = SampleData.items
+                palette.loaded = true
+                palette.isVisible = true
+                palette.selectedID = 1
+                palette.controlHeld = held
+                palette.palette = ListPalette(mode: .go, text: text)
+                render(PanelView(model: palette).environment(\.renderingPreview, true), size: Prefs.defaultPanelSize,
+                       appearance: appearance, to: dir.appendingPathComponent("\(shot)-\(suffix).png"))
+            }
+
+            // "mail" suggests the app; the token then narrows to Safari.
+            let mail = SampleData.apps[3], safari = SampleData.apps[0]
+            for (shot, query, token) in [("panel-app-suggestion", "mail", nil as SourceApp?), ("panel-app-token", "rust", safari)] {
+                let model = PanelModel(app: app)
+                model.query = query
+                model.source = token
+                model.items = SampleData.items.filter { token == nil ? $0.app == mail.bundleId || $0.id == 5 : $0.app == safari.bundleId && !$0.isSecret }
+                model.suggestion = token == nil ? AppSuggestion(app: mail, term: query) : nil
+                model.loaded = true
+                model.isVisible = true
+                model.selectedID = model.items.first?.id
+                model.detail = model.items.first
+                render(PanelView(model: model).environment(\.renderingPreview, true), size: Prefs.defaultPanelSize,
+                       appearance: appearance, to: dir.appendingPathComponent("\(shot)-\(suffix).png"))
+            }
 
             let keys = KeysModel(app: app, items: SampleData.items.filter(\.isSecret))
             keys.selection = [4]

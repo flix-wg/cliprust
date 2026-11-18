@@ -35,13 +35,14 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - under the menu-bar icon
 - **Layout, top to bottom:**
   1. **Search field.** It is always focused, uses 15 pt text and has a magnifier glyph. Placeholder: "Search clipboard". Typing filters at once, searching text, title and note, across the whole history and not just the loaded page.
-  2. **Filter bar.** A row of compact capsule chips: All, pinned lists, Keys (once a key exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
+     - **Source app.** A term that names an app (prefix of its name, a word of it, or a bundle-id component, so "codex" finds `com.openai.codex`) shows a "Copied from Mail · 42" row above the results. ⇥, a click, or ↑ then ⏎ turns it into an app token (icon + name capsule) before the text; the rest of the query then searches that app only. `from:mail` or `@mail` filters directly and becomes the token once a space follows. ⌫ at the start of the field or the token's × removes it. ⌘L lists apps under "Apps" too.
+  2. **Filter bar.** A row of compact capsule chips: All, pinned lists (Pinned, the list of pinned items, joins them while it holds any), Keys (once a key exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
   3. **Body.** The list is on the left. A preview pane (toggled with ⌘P, on by default) takes 42 % of the width on the right.
 - **List rows.** A row is 34 pt high in Compact and 44 pt in Comfortable. Each row contains:
   - **leading:** the source app's icon at 16 pt, or a kind glyph when the app is unknown
   - **main:** one line of preview text, or the title if one is set. For an image, a 28 pt thumbnail plus its size. For a file, the file name plus the path tail in secondary colour. For a key, the masked value in monospace plus the provider.
   - **trailing:** relative time in secondary colour, then a `⌘1`–`⌘9` hint on the first nine rows
-  - a pin dot when the item belongs to a manual list
+  - a pin when the item is pinned (⌘⇧P); pinned items are never pruned
   - a note glyph when the item has a note
 - **Selection.** The selected row shows an accent-tinted rounded highlight (radius 7). Hover shows a subtle fill.
 - **Preview pane** content by kind:
@@ -51,6 +52,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - **file:** a Quick Look thumbnail and the path
   - **URL:** the URL plus its host
 - **Preview footer:** source app · copied time · times used · formats · size, and an editable note field ("Add a note…").
+- **Opening:** the panel shows the page already in memory and reloads only if the core changed since; the search is reset and the page reloaded when it hides, and a stored clip reloads it in the background.
 - **Empty states:** a single centred line in secondary colour, such as "Nothing copied yet" or "No matches for "foo"".
 
 **Keyboard in the panel:**
@@ -66,15 +68,18 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⌘P | toggle preview |
 | ␣ (when search is empty) | Quick Look the item |
 | ⌘⌫ | delete item |
-| ⌘L | go to list: palette of every chip; ⏎ on an unknown name creates a manual list and switches to it |
+| ⇥ (with an app suggestion) | make the app the search token |
+| ⌫ (at the start of the search field) | remove the app token |
+| ⌘⇧P | pin or unpin the item |
+| ⌘L | go to list: palette of every chip, then apps; ⏎ on an app shows its clips, ⏎ on an unknown name creates a manual list and switches to it |
 | ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
-| ⌘⇧S | save search as a smart list (text, plus the active type filter) and switch to it |
+| ⌘⇧S | save search as a smart list (text, app token and the active type filter) and switch to it |
 | ⌃1…⌃9 | jump to filter chip N |
 | ⌘R | rename (title) |
 | ⌘N | edit note |
 | ⌘K | open Keys & IDs |
 | ⌘, | Settings |
-| Esc | close the list palette, else clear search, else close |
+| Esc | close the list palette, else clear search and app token, else close |
 
 The list palette is a 280 pt glass overlay under the search field: type to filter (prefix matches first), ↑↓ or ⌃N/⌃P to move, ⏎ to confirm, Esc or a click outside to close. Lists are reordered, pinned, renamed and deleted in Settings → Lists.
 

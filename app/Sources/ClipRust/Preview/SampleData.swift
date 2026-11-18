@@ -42,14 +42,25 @@ enum SampleData {
              text: masked, formats: ["text"])
     }
 
+    static let apps: [SourceApp] = [
+        SourceApp(bundleId: "com.apple.Safari", name: "Safari", count: 214),
+        SourceApp(bundleId: "com.apple.dt.Xcode", name: "Xcode", count: 168),
+        SourceApp(bundleId: "com.apple.Notes", name: "Notes", count: 97),
+        SourceApp(bundleId: "com.apple.mail", name: "Mail", count: 42),
+        SourceApp(bundleId: "com.apple.Terminal", name: "Terminal", count: 31),
+        SourceApp(bundleId: "com.apple.finder", name: "Finder", count: 12),
+    ]
+
     static func appState() -> AppState {
         let app = AppState(core: nil)
         app.lists = [
             ClipList(name: Item.keysList, sort: "recent", manual: true),
+            ClipList(name: Item.pinnedList, sort: "recent", manual: true),
             ClipList(name: "Snippets", sort: "recent", manual: true),
             ClipList(name: "Today", sort: "recent", manual: false),
         ]
         app.pinnedIDs = [5, 7]
+        app.apps = apps
         app.excludes = ["com.apple.keychainaccess", "com.1password.1password"]
         app.settings = CoreSettings(paused: false, detectKeys: true, maxItems: 5000, maxAgeDays: nil)
         app.stats = Stats(items: 4812, rawBytes: 91_000_000, storedBytes: 38_400_000, fileBytes: 0,
@@ -73,7 +84,7 @@ enum SampleData {
         }
         guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return }
-        if let small = Thumbnails.downscale(png, maxPixel: 96), let large = Thumbnails.downscale(png, maxPixel: 1400) {
+        if let small = Thumbnails.downscale(png, maxPixel: 96), let large = Thumbnails.downscale(png, maxPixel: Thumbnails.largePixels) {
             Thumbnails.shared.seed(3, small)
             Thumbnails.shared.seed(3, large)
         }

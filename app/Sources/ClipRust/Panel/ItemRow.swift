@@ -6,6 +6,7 @@ struct ItemRow: View {
     let index: Int
     let selected: Bool
     let pinned: Bool
+    var now = Date()
     @AppStorage(Prefs.Key.density) private var density = Density.compact
     @AppStorage(Prefs.Key.showAppIcons) private var showAppIcons = true
     @AppStorage(Prefs.Key.showHints) private var showHints = true
@@ -113,7 +114,7 @@ struct ItemRow: View {
             if pinned {
                 Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.tertiary)
             }
-            Text(Format.ago(item.copiedAt))
+            Text(Format.ago(item.copiedAt, now: now))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()

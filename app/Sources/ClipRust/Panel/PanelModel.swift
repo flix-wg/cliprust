@@ -21,8 +21,14 @@ enum ChooseMode { case standard, plain, copyOnly }
 
 enum PanelAction {
     case choose(ChooseMode)
-    case addToList(String), newList, removeFromList(String)
+    case addToList(String), newList, removeFromList(String), togglePin
     case rename, note, revealInFinder, quickLook, delete
+}
+
+/// An app named by a search term; accepting it turns the term into the app token.
+struct AppSuggestion: Equatable {
+    let app: SourceApp
+    let term: String
 }
 
 @MainActor @Observable
@@ -31,6 +37,10 @@ final class PanelModel {
 
     let app: AppState
     var query = "" { didSet { if query != oldValue { reload(resetSelection: true) } } }
+    /// The app token in the search field: only items copied from that app.
+    var source: SourceApp? { didSet { if source?.bundleId != oldValue?.bundleId { reload(resetSelection: true) } } }
+    var suggestion: AppSuggestion?
+    var suggestionSelected = false
     var filter: ItemFilter = .all {
         didSet {
             guard filter != oldValue else { return }
@@ -45,19 +55,25 @@ final class PanelModel {
     var isVisible = false
     var palette: ListPalette?
     var toast: String?
+    var toastSymbol = "checkmark"
     var controlHeld = false
+    /// The time rows show their age against; set on open.
+    var now = Date()
 
     @ObservationIgnored var perform: (PanelAction, Item) -> Void = { _, _ in }
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var toastGeneration = 0
+    @ObservationIgnored private var loadedRevision = -1
 
     init(app: AppState) {
         self.app = app
     }
 
     /// Bar order: All, pinned lists, Keys, the type filters, then the other lists.
+    /// Pinned shows only while it holds items.
     func filters(kinds: Bool = Prefs.showTypeFilters) -> [ItemFilter] {
         let lists = app.orderedLists.map(\.name)
+            .filter { $0 != Item.pinnedList || !app.pinnedIDs.isEmpty || filter == .list($0) }
         let pinned = lists.filter(app.pinnedLists.contains)
         var out: [ItemFilter] = [.all] + pinned.map(ItemFilter.list)
         if app.hasKeysList { out.append(.keys) }
@@ -73,13 +89,14 @@ final class PanelModel {
     }
 
     func showsCount(_ f: ItemFilter) -> Bool {
-        loaded && filter == f && (f != .all || !query.isEmpty)
+        loaded && filter == f && (f != .all || !query.isEmpty || source != nil)
     }
 
     var countLabel: String { items.count >= Self.pageSize ? "\(Self.pageSize)+" : "\(items.count)" }
 
     var emptyMessage: String {
-        if !query.isEmpty { return "No matches for “\(query)”" }
+        if !query.isEmpty { return "No matches for “\(query)”" + (source.map { " from \($0.title)" } ?? "") }
+        if let source { return "Nothing from \(source.title)" + (filter == .all ? "" : " in \(filter.title)") }
         switch filter {
         case .all: return "Nothing copied yet"
         case .keys: return "No keys yet"
@@ -93,18 +110,46 @@ final class PanelModel {
         return nil
     }
 
+    /// Shows the items already in memory; reloads only if the core changed since they were loaded.
     func prepareForShow() {
-        palette = nil
-        controlHeld = false
-        let last = Prefs.openOn == .last ? Prefs.lastFilter.flatMap(ItemFilter.init(key:)) : nil
-        let target = last.flatMap { filters().contains($0) ? $0 : nil } ?? .all
-        if query.isEmpty, filter == target { reload(resetSelection: true) } else { query = ""; filter = target }
+        now = Date()
+        resetSearch()
+        if isStale { reload(resetSelection: true) } else { selectedID = items.first?.id }
     }
 
-    func showToast(_ text: String) {
+    /// Resets the search while hidden, so the next open finds it loaded.
+    func didHide() {
+        resetSearch()
+        if isStale { reload(resetSelection: true) }
+    }
+
+    /// A clip was stored: refresh the visible page, or prewarm the next open.
+    func itemStored() {
+        reload(resetSelection: !isVisible)
+    }
+
+    func clearSearch() {
+        query = ""
+        source = nil
+    }
+
+    private var isStale: Bool { app.core.map { $0.revision.load(ordering: .relaxed) != loadedRevision } ?? false }
+
+    private func resetSearch() {
+        palette = nil
+        controlHeld = false
+        suggestionSelected = false
+        let last = Prefs.openOn == .last ? Prefs.lastFilter.flatMap(ItemFilter.init(key:)) : nil
+        let target = last.flatMap { filters().contains($0) ? $0 : nil } ?? .all
+        clearSearch()
+        filter = target
+    }
+
+    func showToast(_ text: String, symbol: String = "checkmark") {
         toastGeneration += 1
         let gen = toastGeneration
         toast = text
+        toastSymbol = symbol
         Task {
             try? await Task.sleep(for: .seconds(1.2))
             if gen == toastGeneration { toast = nil }
@@ -115,30 +160,86 @@ final class PanelModel {
         guard let core = app.core else { return }
         generation += 1
         let gen = generation
-        let (q, f) = (query, filter)
-        let hasKeys = app.hasKeysList
+        loadedRevision = core.revision.load(ordering: .relaxed)
+        let (q, f, token, hasKeys) = (query, filter, source, app.hasKeysList)
         Task {
-            let found: [Item]
+            let terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
+            var named: AppSuggestion?
+            var suggested: AppSuggestion?
+            if token == nil {
+                for term in terms.prefix(6) {
+                    if let name = Self.appName(in: term) {
+                        if let hit = try? await core.apps(query: name).first {
+                            named = AppSuggestion(app: hit, term: term)
+                            break
+                        }
+                    } else if suggested == nil, term.count >= 2, let hit = try? await core.apps(query: term).first {
+                        suggested = AppSuggestion(app: hit, term: term)
+                    }
+                }
+            }
+            let text = named.map { n in terms.filter { $0 != n.term }.joined(separator: " ") } ?? q
+            let bundle = token?.bundleId ?? named?.app.bundleId
+            let found: [Item]?
             do {
                 switch f {
-                case .all: found = try await core.items(query: q, limit: Self.pageSize)
-                case .kind(let kind): found = try await core.items(query: q, kind: kind, limit: Self.pageSize)
-                case .keys: found = hasKeys ? try await core.items(query: q, list: Item.keysList, limit: Self.pageSize) : []
-                case .list(let name): found = try await core.items(query: q, list: name, limit: Self.pageSize)
+                case .all: found = try await core.items(query: text, app: bundle, limit: Self.pageSize)
+                case .kind(let kind): found = try await core.items(query: text, kind: kind, app: bundle, limit: Self.pageSize)
+                case .keys: found = hasKeys ? try await core.items(query: text, list: Item.keysList, app: bundle, limit: Self.pageSize) : []
+                case .list(let name): found = try await core.items(query: text, list: name, app: bundle, limit: Self.pageSize)
                 }
             } catch {
-                found = []
+                found = nil
             }
             guard gen == generation else { return }
-            items = found
+            if found == nil { loadedRevision = -1 }
+            items = found ?? []
             loaded = true
-            if resetSelection || !found.contains(where: { $0.id == selectedID }) {
-                selectedID = found.first?.id
+            suggestion = named == nil ? suggested : nil
+            if suggestion == nil || resetSelection { suggestionSelected = false }
+            if resetSelection || !items.contains(where: { $0.id == selectedID }) {
+                selectedID = items.first?.id
+            }
+            // `from:mail ` / `@mail ` becomes the token once a space follows it.
+            if let named, named.term != terms.last || q.last?.isWhitespace == true {
+                source = named.app
+                query = text
             }
         }
     }
 
+    /// The app named by `from:mail` or `@mail`.
+    private static func appName(in term: String) -> String? {
+        let name = term.lowercased().hasPrefix("from:") ? term.dropFirst(5) : term.hasPrefix("@") ? term.dropFirst() : ""
+        return name.isEmpty ? nil : String(name)
+    }
+
+    /// Turns the suggested app into the token and drops its term from the query.
+    @discardableResult
+    func acceptSuggestion() -> Bool {
+        guard let s = suggestion else { return false }
+        var terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        terms.removeAll { $0 == s.term }
+        suggestion = nil
+        suggestionSelected = false
+        source = s.app
+        query = terms.joined(separator: " ")
+        return true
+    }
+
+    /// The suggestion row sits above the first item.
     func move(by delta: Int) {
+        if suggestionSelected {
+            if delta > 0, !items.isEmpty {
+                suggestionSelected = false
+                if selectedID == nil { selectedID = items.first?.id }
+            }
+            return
+        }
+        if suggestion != nil, delta < 0 ? (selectedIndex ?? 0) == 0 : items.isEmpty {
+            suggestionSelected = true
+            return
+        }
         guard !items.isEmpty else { return }
         let i = selectedIndex.map { $0 + delta } ?? 0
         selectedID = items[min(max(i, 0), items.count - 1)].id

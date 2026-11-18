@@ -39,7 +39,7 @@ struct PanelView: View {
         }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
-                Label(toast, systemImage: "checkmark")
+                Label(toast, systemImage: model.toastSymbol)
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 12)
                     .frame(height: 28)
@@ -71,10 +71,15 @@ struct PanelView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.secondary)
-            TextField("Search clipboard", text: $model.query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 15))
-                .focused($searchFocused)
+            HStack(spacing: 6) {
+                if let source = model.source {
+                    AppToken(app: source) { model.source = nil }
+                }
+                TextField(model.source.map { "Search \($0.title)" } ?? "Search clipboard", text: $model.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15))
+                    .focused($searchFocused)
+            }
             if model.app.settings.paused {
                 Label("Paused", systemImage: "pause.fill")
                     .font(.system(size: 11, weight: .medium))
@@ -170,11 +175,17 @@ struct ItemList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
+                    if let suggestion = model.suggestion {
+                        AppSuggestionRow(suggestion: suggestion, selected: model.suggestionSelected)
+                            .id("suggestion")
+                            .onTapGesture { model.acceptSuggestion() }
+                    }
                     ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                        ItemRow(item: item, index: index, selected: item.id == model.selectedID,
-                                pinned: model.app.pinnedIDs.contains(item.id))
+                        ItemRow(item: item, index: index, selected: item.id == model.selectedID && !model.suggestionSelected,
+                                pinned: model.app.pinnedIDs.contains(item.id), now: model.now)
                             .id(item.id)
                             .onTapGesture {
+                                model.suggestionSelected = false
                                 model.selectedID = item.id
                                 if NSApp.currentEvent?.clickCount == 2 { model.perform(.choose(.standard), item) }
                             }
@@ -187,9 +198,12 @@ struct ItemList: View {
             .onChange(of: model.selectedID) { _, id in
                 if let id { proxy.scrollTo(id) }
             }
+            .onChange(of: model.suggestionSelected) { _, on in
+                if on { proxy.scrollTo("suggestion") }
+            }
         }
         .overlay {
-            if model.loaded, model.items.isEmpty {
+            if model.loaded, model.items.isEmpty, model.suggestion == nil {
                 Text(model.emptyMessage)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
@@ -208,6 +222,8 @@ struct RowMenu: View {
         Button("Paste") { model.perform(.choose(.standard), item) }
         Button("Paste as Plain Text") { model.perform(.choose(.plain), item) }
         Button("Copy") { model.perform(.choose(.copyOnly), item) }
+        Divider()
+        Button(model.app.pinnedIDs.contains(item.id) ? "Unpin" : "Pin") { model.perform(.togglePin, item) }
         Menu("Add to List") {
             ForEach(model.app.manualLists) { list in
                 Button(list.name) { model.perform(.addToList(list.name), item) }

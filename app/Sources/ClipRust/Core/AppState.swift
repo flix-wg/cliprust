@@ -7,6 +7,7 @@ final class AppState {
     var settings = CoreSettings()
     var lists: [ClipList] = []
     var recent: [Item] = []
+    var apps: [SourceApp] = []
     var pinnedIDs: Set<Int64> = []
     var excludes: [String] = []
     var stats: Stats?
@@ -22,11 +23,12 @@ final class AppState {
     var manualLists: [ClipList] { userLists.filter(\.manual) }
     var hasKeysList: Bool { lists.contains { $0.name == Item.keysList } }
 
-    /// User lists in the order set in Settings; lists not placed yet come last.
+    /// User lists in the order set in Settings; Pinned comes first and other lists not placed yet last.
     var orderedLists: [ClipList] {
         let rank = Dictionary(listOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let key = { (name: String) in rank[name] ?? (name == Item.pinnedList ? -1 : .max) }
         return userLists.enumerated()
-            .sorted { (rank[$0.element.name] ?? .max, $0.offset) < (rank[$1.element.name] ?? .max, $1.offset) }
+            .sorted { (key($0.element.name), $0.offset) < (key($1.element.name), $1.offset) }
             .map(\.element)
     }
 
@@ -41,6 +43,12 @@ final class AppState {
         }
         await refreshRecent()
         await refreshPins()
+        await refreshApps()
+    }
+
+    func refreshApps() async {
+        guard let core else { return }
+        apps = (try? await core.apps()) ?? apps
     }
 
     func refreshRecent() async {
@@ -54,16 +62,24 @@ final class AppState {
         await refreshPins()
     }
 
-    /// Items in a manual list show a pin; lists are small, so this stays cheap.
+    /// Items in the Pinned list show a pin.
     func refreshPins() async {
         guard let core else { return }
-        var ids = Set<Int64>()
-        for list in manualLists {
-            if let items = try? await core.items(list: list.name, limit: 5000) {
-                ids.formUnion(items.map(\.id))
-            }
+        if let ids = try? await core.listIDs(Item.pinnedList) { pinnedIDs = Set(ids) }
+    }
+
+    /// Pins or unpins an item; returns whether it is pinned now. The Pinned list
+    /// is created on first use and pinned to the front of the filter bar.
+    func togglePinned(_ id: Int64) async -> Bool {
+        if pinnedIDs.contains(id) {
+            await removeFromList(Item.pinnedList, id)
+            return false
         }
-        pinnedIDs = ids
+        if !lists.contains(where: { $0.name == Item.pinnedList }), !pinnedLists.contains(Item.pinnedList) {
+            pinnedLists.insert(Item.pinnedList, at: 0)
+        }
+        await addToList(Item.pinnedList, id)
+        return true
     }
 
     func itemStored(secret: Bool) {
@@ -94,9 +110,9 @@ final class AppState {
         await refreshPins()
     }
 
-    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil) async -> Bool {
+    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil, app: String? = nil) async -> Bool {
         do {
-            try await core?.createList(name, contains: text, kind: kind)
+            try await core?.createList(name, contains: text, kind: kind, app: app)
             await refreshLists()
             return true
         } catch {

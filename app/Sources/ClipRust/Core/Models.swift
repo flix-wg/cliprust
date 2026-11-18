@@ -7,6 +7,7 @@ enum ItemKind: String, Codable, CaseIterable, Sendable {
 struct Item: Codable, Identifiable, Hashable, Sendable {
     static let keysList = "Keys"
     static let idsList = "IDs"
+    static let pinnedList = "Pinned"
 
     let id: Int64
     let kind: ItemKind
@@ -64,6 +65,15 @@ extension Item {
     var siteLabel: String { domain ?? "" }
     var appLabel: String { app.map(AppInfo.name) ?? "" }
     var noteLabel: String { note ?? "" }
+}
+
+/// An app that stored items were copied from.
+struct SourceApp: Codable, Hashable, Identifiable, Sendable {
+    let bundleId: String
+    var name: String?
+    var count: Int
+    var id: String { bundleId }
+    var title: String { name ?? AppInfo.name(bundleId) }
 }
 
 struct ClipList: Codable, Identifiable, Hashable, Sendable {

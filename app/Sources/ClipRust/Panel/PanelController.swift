@@ -89,8 +89,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             QLPreviewPanel.shared().orderOut(nil)
         }
         model.isVisible = false
-        model.controlHeld = false
         panel.orderOut(nil)
+        model.didHide()
+        Thumbnails.shared.trim()
     }
 
     /// Pastes `item` into `target` (or the app that was active when the panel opened).
@@ -199,11 +200,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         case (kVK_UpArrow, []): model.move(by: -1)
         case (kVK_PageDown, []): model.move(by: 8)
         case (kVK_PageUp, []): model.move(by: -8)
-        case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []): run(.choose(.standard), item)
+        case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []):
+            if model.suggestionSelected || (model.items.isEmpty && model.suggestion != nil) {
+                model.acceptSuggestion()
+            } else {
+                run(.choose(.standard), item)
+            }
         case (kVK_Return, .option): run(.choose(.plain), item)
         case (kVK_Return, .command): run(.choose(.copyOnly), item)
-        case (kVK_Escape, []): model.query.isEmpty ? close() : (model.query = "")
-        case (kVK_Tab, []): model.cycleFilter(by: 1)
+        case (kVK_Escape, []): model.query.isEmpty && model.source == nil ? close() : model.clearSearch()
+        case (kVK_Tab, []): if !model.acceptSuggestion() { model.cycleFilter(by: 1) }
+        case (kVK_Delete, []) where model.source != nil && caretAtStart: model.source = nil
         case (kVK_Tab, .shift): model.cycleFilter(by: -1)
         case (kVK_LeftArrow, .command): model.cycleFilter(by: -1)
         case (kVK_RightArrow, .command): model.cycleFilter(by: 1)
@@ -211,6 +218,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case (kVK_Delete, .command): run(.delete, item)
         case (_, .control) where ("1"..."9").contains(key) && key.count == 1:
             if !model.jump(to: Int(key)! - 1) { NSSound.beep() }
+        case (_, [.command, .shift]) where key == "p": run(.togglePin, item)
         case (_, .control) where key == "n": model.move(by: 1)
         case (_, .control) where key == "p": model.move(by: -1)
         case (_, .command):
@@ -231,6 +239,10 @@ final class PanelController: NSObject, NSWindowDelegate {
             return false
         }
         return true
+    }
+
+    private var caretAtStart: Bool {
+        (panel.firstResponder as? NSTextView)?.selectedRange() == NSRange(location: 0, length: 0)
     }
 
     /// ⌘L, ⌘D and ⌘⇧S open the list palette in any state.
@@ -277,6 +289,12 @@ final class PanelController: NSObject, NSWindowDelegate {
             Task { await app.addToList(name, item.id) }
         case .newList:
             _ = model.openPalette(.add(item.id))
+        case .togglePin:
+            Task {
+                let pinned = await app.togglePinned(item.id)
+                model.showToast(pinned ? "Pinned" : "Unpinned", symbol: pinned ? "pin.fill" : "pin.slash")
+                if model.filter == .list(Item.pinnedList) { model.reload() }
+            }
         case .removeFromList(let name):
             Task {
                 await app.removeFromList(name, item.id)
