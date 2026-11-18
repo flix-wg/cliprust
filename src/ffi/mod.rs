@@ -36,7 +36,7 @@ pub enum Code {
     NotFound,
     /// A malformed request, or one the store refuses.
     Invalid,
-    /// The key needed to read the data is unavailable (reserved for encryption).
+    /// The key needed to read the data is missing from or refused by the Keychain.
     Locked,
     /// The database or the pasteboard failed.
     Io,
@@ -71,7 +71,8 @@ impl From<crate::Error> for Error {
                 Code::Invalid
             }
             E::Json(_) | E::Refused(_) => Code::Invalid,
-            E::Sql(_) | E::Io(_) | E::Clipboard(_) => Code::Io,
+            E::Locked(_) => Code::Locked,
+            E::Sql(_) | E::Io(_) | E::Clipboard(_) | E::Corrupt(_) => Code::Io,
         };
         Error::new(code, e.to_string())
     }

@@ -2,6 +2,7 @@
 
 pub mod capture;
 pub mod contacts;
+pub mod crypto;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 #[cfg(feature = "pastenow-import")]
@@ -37,6 +38,18 @@ pub enum Error {
     Clipboard(String),
     #[error("{0}")]
     Refused(String),
+    /// The key needed to read or write a key item is missing or unavailable.
+    #[error("{0}")]
+    Locked(String),
+    /// A sealed payload failed its integrity check with the right key.
+    #[error("{0}")]
+    Corrupt(String),
+}
+
+impl From<crypto::KeyError> for Error {
+    fn from(e: crypto::KeyError) -> Self {
+        Error::Locked(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
