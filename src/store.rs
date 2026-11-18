@@ -106,6 +106,12 @@ pub struct Store {
     conn: Connection,
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        schema::checkpoint(&self.conn);
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
@@ -506,6 +512,8 @@ impl Store {
         self.conn
             .query_row("PRAGMA incremental_vacuum", [], |_| Ok(()))
             .optional()?;
+        // Deleted rows also linger in the WAL until it is checkpointed.
+        schema::checkpoint(&self.conn);
         Ok(())
     }
 

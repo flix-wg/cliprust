@@ -114,12 +114,24 @@ pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // A checkpoint that resets the WAL also truncates it to this size.
+    conn.pragma_update_and_check(None, "journal_size_limit", 4 << 20, |_| Ok(()))?;
     conn.pragma_update(None, "foreign_keys", true)?;
     // Deleted clips and replaced secrets are overwritten, not left in free pages.
     conn.pragma_update(None, "secure_delete", true)?;
     // Small page cache keeps the resident set low; the hot data is tiny.
     conn.pragma_update(None, "cache_size", -1024)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
+    conn.busy_timeout(BUSY_TIMEOUT)
+}
+
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Folds the WAL into the main file and truncates it. Best effort: with the
+/// busy timeout off, another process's reader or writer just makes it skip.
+pub(crate) fn checkpoint(conn: &Connection) {
+    let _ = conn.busy_timeout(std::time::Duration::ZERO);
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    let _ = conn.busy_timeout(BUSY_TIMEOUT);
 }
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {

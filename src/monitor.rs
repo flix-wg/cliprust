@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use clipboard_rs::{ClipboardContext, ClipboardHandler, ClipboardWatcher, ClipboardWatcherContext};
+use clipboard_rs::ClipboardContext;
 
 use crate::capture::{self, Skipped};
 use crate::model::{Kind, SecretKind};
@@ -22,15 +22,17 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    /// How often the pasteboard change counter is polled.
+    /// Poll interval right after a change; idle polling backs off to `max_interval`.
     pub interval: Duration,
+    pub max_interval: Duration,
     pub max_item_bytes: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            interval: Duration::from_millis(300),
+            interval: Duration::from_millis(250),
+            max_interval: Duration::from_millis(1000),
             max_item_bytes: 32 << 20,
         }
     }
@@ -43,11 +45,18 @@ struct Handler<F> {
     on_event: F,
 }
 
-impl<F: FnMut(Event)> ClipboardHandler for Handler<F> {
-    fn on_clipboard_change(&mut self) {
+impl<F: FnMut(Event)> Handler<F> {
+    fn on_change(&mut self) {
         let event =
             platform::with_autorelease_pool(|| self.capture().unwrap_or_else(Event::Failed));
         (self.on_event)(event);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl<F: FnMut(Event)> clipboard_rs::ClipboardHandler for Handler<F> {
+    fn on_clipboard_change(&mut self) {
+        self.on_change();
     }
 }
 
@@ -92,16 +101,48 @@ pub fn run(
     config: Config,
     on_event: impl FnMut(Event) + Send + 'static,
 ) -> Result<()> {
-    let clip_err = |e: Box<dyn std::error::Error + Send + Sync>| Error::Clipboard(e.to_string());
-    let ctx = ClipboardContext::new().map_err(clip_err)?;
-    let mut watcher =
-        ClipboardWatcherContext::new_with_interval(config.interval).map_err(clip_err)?;
-    watcher.add_handler(Handler {
+    let handler = Handler {
         store,
-        ctx,
+        ctx: ClipboardContext::new().map_err(clip_err)?,
         max_item_bytes: config.max_item_bytes,
         on_event,
-    });
+    };
+    watch(handler, config)
+}
+
+fn clip_err(e: Box<dyn std::error::Error + Send + Sync>) -> Error {
+    Error::Clipboard(e.to_string())
+}
+
+/// Polls `changeCount` like clipboard-rs did, but backs off by 1.25x per idle
+/// poll toward `max_interval`; a clipboard change or a switch of frontmost app
+/// snaps back to `interval`. The wait is a park, so `unpark` wakes it at once.
+#[cfg(target_os = "macos")]
+fn watch<F: FnMut(Event)>(mut handler: Handler<F>, config: Config) -> Result<()> {
+    let mut last = platform::pasteboard_state();
+    let mut delay = config.interval;
+    loop {
+        std::thread::park_timeout(delay);
+        let state = platform::pasteboard_state();
+        // As in clipboard-rs, a zero count is adopted as the baseline silently.
+        if last.0 != 0 && state.0 != last.0 {
+            handler.on_change();
+        }
+        delay = if state == last {
+            (delay * 5 / 4).min(config.max_interval)
+        } else {
+            config.interval
+        };
+        last = state;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn watch<F: FnMut(Event) + Send + 'static>(handler: Handler<F>, config: Config) -> Result<()> {
+    use clipboard_rs::{ClipboardWatcher, ClipboardWatcherContext};
+    let mut watcher =
+        ClipboardWatcherContext::new_with_interval(config.interval).map_err(clip_err)?;
+    watcher.add_handler(handler);
     watcher.start_watch();
     Ok(())
 }

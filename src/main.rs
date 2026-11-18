@@ -30,7 +30,8 @@ struct Cli {
 enum Cmd {
     /// Record every clipboard change until interrupted
     Watch {
-        #[arg(long, default_value_t = 300)]
+        /// Poll interval after a change; idle polling slows to 1 s
+        #[arg(long, default_value_t = 250)]
         interval_ms: u64,
         /// Skip clips larger than this many MiB
         #[arg(long, default_value_t = 32)]
@@ -209,6 +210,7 @@ fn run(cli: Cli) -> CliResult {
         } => {
             let config = monitor::Config {
                 interval: Duration::from_millis(interval_ms),
+                max_interval: Duration::from_millis(interval_ms.max(1000)),
                 max_item_bytes: max_mb << 20,
             };
             return watch(store, config, &path);

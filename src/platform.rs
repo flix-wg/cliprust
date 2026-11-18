@@ -24,6 +24,19 @@ pub fn frontmost_app() -> Option<AppInfo> {
     None
 }
 
+/// `(NSPasteboard.changeCount, frontmost app pid)`, polled by the monitor.
+#[cfg(target_os = "macos")]
+pub fn pasteboard_state() -> (isize, i32) {
+    use objc2_app_kit::{NSPasteboard, NSWorkspace};
+
+    with_autorelease_pool(|| {
+        let pid = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map_or(0, |a| a.processIdentifier());
+        (NSPasteboard::generalPasteboard().changeCount(), pid)
+    })
+}
+
 /// Drains Objective-C temporaries created while reading the pasteboard; the
 /// watcher thread has no pool of its own, so they would otherwise pile up.
 #[cfg(target_os = "macos")]
