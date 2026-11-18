@@ -2,7 +2,7 @@ import AppKit
 
 /// Names and icons of apps by bundle id, cached.
 enum AppInfo {
-    nonisolated(unsafe) private static var icons: [String: NSImage] = [:]
+    nonisolated(unsafe) private static var icons: [String: NSImage?] = [:]
     nonisolated(unsafe) private static var names: [String: String] = [:]
 
     static func url(_ bundleID: String) -> URL? {
@@ -12,8 +12,7 @@ enum AppInfo {
     static func icon(_ bundleID: String?) -> NSImage? {
         guard let bundleID else { return nil }
         if let cached = icons[bundleID] { return cached }
-        guard let url = url(bundleID) else { return nil }
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        let icon = url(bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
         icons[bundleID] = icon
         return icon
     }

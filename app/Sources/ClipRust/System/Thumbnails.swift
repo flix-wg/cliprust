@@ -15,14 +15,28 @@ final class Thumbnail {
 @MainActor
 final class Thumbnails {
     static let shared = Thumbnails()
+    /// Enough for the preview pane (0.42 of the panel) at 2x.
+    static let largePixels = 800
     var core: Core?
     private let small = NSCache<NSNumber, Thumbnail>()
     private let large = NSCache<NSNumber, Thumbnail>()
+    private let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
 
     init() {
         small.countLimit = 300
-        large.countLimit = 6
+        large.countLimit = 3
+        pressure.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.large.removeAllObjects()
+                if self.pressure.data.contains(.critical) { self.small.removeAllObjects() }
+            }
+        }
+        pressure.activate()
     }
+
+    /// Drops the preview-size images, e.g. when the panel closes.
+    func trim() { large.removeAllObjects() }
 
     func cached(_ id: Int64, large wantLarge: Bool = false) -> Thumbnail? {
         (wantLarge ? large : small).object(forKey: NSNumber(value: id))
@@ -36,7 +50,7 @@ final class Thumbnails {
     func image(for id: Int64, large wantLarge: Bool = false) async -> Thumbnail? {
         if let hit = cached(id, large: wantLarge) { return hit }
         guard let core, let data = await core.imageData(id) else { return nil }
-        let maxPixel = wantLarge ? 1400 : 96
+        let maxPixel = wantLarge ? Self.largePixels : 96
         let thumb = await Task.detached { Self.downscale(data, maxPixel: maxPixel) }.value
         if let thumb { (wantLarge ? large : small).setObject(thumb, forKey: NSNumber(value: id)) }
         return thumb
