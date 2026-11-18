@@ -132,12 +132,11 @@ extension Core {
         try await run("set_note", ["id": id, "note": note.map { $0 as Any } ?? NSNull()])
     }
     func lists() async throws -> [ClipList] { try await call("lists") }
-    /// With `contains` or `app`, a smart list matching them (and `kind`, if given).
-    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil, app: String? = nil) async throws {
+    /// With `terms` or `app`, a smart list matching every term (and `kind`, if given).
+    func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil) async throws {
         var p: [String: Any] = ["name": name]
-        if text != nil || app != nil {
-            var rules: [[String: Any]] = []
-            if let text { rules.append(["type": "contains", "text": text]) }
+        if !terms.isEmpty || app != nil {
+            var rules: [[String: Any]] = terms.map { ["type": "contains", "text": $0] }
             if let kind { rules.append(["type": "kind", "kind": kind.rawValue]) }
             if let app { rules.append(["type": "app", "bundle_id": app]) }
             p["rule"] = ["type": "all", "rules": rules]

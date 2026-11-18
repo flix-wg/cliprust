@@ -78,8 +78,7 @@ final class AppState {
         if !lists.contains(where: { $0.name == Item.pinnedList }), !pinnedLists.contains(Item.pinnedList) {
             pinnedLists.insert(Item.pinnedList, at: 0)
         }
-        await addToList(Item.pinnedList, id)
-        return true
+        return await addToList(Item.pinnedList, id)
     }
 
     func itemStored(secret: Bool) {
@@ -99,20 +98,27 @@ final class AppState {
         }
     }
 
-    /// Creates a manual list named `name` if there is none.
-    func addToList(_ name: String, _ id: Int64) async {
-        try? await core?.addToList(name, id)
+    /// Creates a manual list named `name` if there is none; false if the item was not added.
+    @discardableResult
+    func addToList(_ name: String, _ id: Int64) async -> Bool {
+        var added = true
+        do { try await core?.addToList(name, id) } catch { lastError = error.localizedDescription; added = false }
         if lists.contains(where: { $0.name == name }) { await refreshPins() } else { await refreshLists() }
+        return added
     }
+
+    /// Pinning owns the name "Pinned"; no other list may take it.
+    static func isReserved(_ name: String) -> Bool { name.caseInsensitiveCompare(Item.pinnedList) == .orderedSame }
 
     func removeFromList(_ name: String, _ id: Int64) async {
         try? await core?.removeFromList(name, id)
         await refreshPins()
     }
 
-    func createList(_ name: String, contains text: String? = nil, kind: ItemKind? = nil, app: String? = nil) async -> Bool {
+    func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil) async -> Bool {
+        guard !Self.isReserved(name) else { return false }
         do {
-            try await core?.createList(name, contains: text, kind: kind, app: app)
+            try await core?.createList(name, terms: terms, kind: kind, app: app)
             await refreshLists()
             return true
         } catch {
@@ -126,6 +132,7 @@ final class AppState {
     }
 
     func renameList(_ name: String, to newName: String) async -> Bool {
+        guard !Self.isReserved(newName) else { return false }
         do {
             try await core?.renameList(name, newName)
         } catch {

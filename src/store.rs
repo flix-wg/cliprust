@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{AppInfo, Capture, Item, ItemSummary, Kind, Rep, SecretKind, Settings};
 use crate::rules::{CONTAINS_SQL, Rule, SortType};
-use crate::{Result, schema, secrets};
+use crate::{Error, Result, schema, secrets};
 
 pub const KEYS_LIST: &str = "Keys";
 /// IDs get their own list so that Keys holds only masked secrets.
 pub const IDS_LIST: &str = "IDs";
+/// The manual list item pinning adds to; no smart list may take its name.
+pub const PINNED_LIST: &str = "Pinned";
 
 const ZSTD_LEVEL: i32 = 3;
 /// FTS indexes at most this much of a clip; the full text stays in the payload.
@@ -508,6 +510,9 @@ impl Store {
     }
 
     pub fn create_list(&self, name: &str, rule: Option<&Rule>, sort: SortType) -> Result<i64> {
+        if name == PINNED_LIST && rule.is_some() {
+            return Err(reserved());
+        }
         let rule = rule.map(serde_json::to_string).transpose()?;
         self.conn.execute(
             "INSERT INTO paste_lists (name, filter_rule_data, sort_weight, sort_type) \
@@ -556,6 +561,9 @@ impl Store {
     }
 
     pub fn rename_list(&self, name: &str, new_name: &str) -> Result<bool> {
+        if new_name == PINNED_LIST && self.list_by_name(name)?.is_some_and(|l| l.rule.is_some()) {
+            return Err(reserved());
+        }
         Ok(self.conn.execute(
             "UPDATE paste_lists SET name = ?2 WHERE name = ?1",
             [name, new_name],
@@ -564,6 +572,11 @@ impl Store {
 
     /// Adds an item to a manual list, creating the list if needed.
     pub fn add_to_list(&self, name: &str, item_id: i64, now: i64) -> Result<()> {
+        if self.list_by_name(name)?.is_some_and(|l| l.rule.is_some()) {
+            return Err(Error::Refused(format!(
+                "{name:?} is a smart list; its items come from its rule"
+            )));
+        }
         let list_id = ensure_list(&self.conn, name)?;
         self.conn.execute(
             "INSERT OR IGNORE INTO paste_list_items (list_id, item_id, added_at) VALUES (?1, ?2, ?3)",
@@ -812,6 +825,10 @@ fn upsert_app(conn: &Connection, app: &AppInfo, copies: i64) -> rusqlite::Result
     )
 }
 
+fn reserved() -> Error {
+    Error::Refused(format!("{PINNED_LIST:?} is reserved for pinned items"))
+}
+
 fn ensure_list(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
     conn.query_row(
         "INSERT INTO paste_lists (name, sort_weight) \
@@ -1006,6 +1023,20 @@ mod tests {
             ..links
         };
         assert_eq!(s.list_items(&recent, 10, 5_000).unwrap().len(), 2);
+        // A saved search is one `contains` per term, like the search itself.
+        let saved = PasteList {
+            rule: Some(Rule::All {
+                rules: ["EXAMPLE", "home"]
+                    .map(|t| Rule::Contains { text: t.into() })
+                    .into(),
+            }),
+            ..recent
+        };
+        let found = ids(s.search("EXAMPLE home", 10).unwrap());
+        assert_eq!(
+            (ids(s.list_items(&saved, 10, 5_000).unwrap()), found),
+            (vec![home], vec![home])
+        );
     }
 
     #[test]

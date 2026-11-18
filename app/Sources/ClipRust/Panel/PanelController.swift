@@ -286,12 +286,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .choose(let mode):
             paste(item, mode: mode)
         case .addToList(let name):
-            Task { await app.addToList(name, item.id) }
+            Task { if !(await app.addToList(name, item.id)) { NSSound.beep(); model.reload() } }
         case .newList:
             _ = model.openPalette(.add(item.id))
         case .togglePin:
             Task {
+                let was = app.pinnedIDs.contains(item.id)
                 let pinned = await app.togglePinned(item.id)
+                if pinned == was { return NSSound.beep() }
                 model.showToast(pinned ? "Pinned" : "Unpinned", symbol: pinned ? "pin.fill" : "pin.slash")
                 if model.filter == .list(Item.pinnedList) { model.reload() }
             }

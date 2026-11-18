@@ -393,11 +393,6 @@ fn lists(store: &Store, cmd: ListsCmd) -> CliResult {
             }
         }
         ListsCmd::Put { name, id } => {
-            if store.list_by_name(&name)?.is_some_and(|l| l.rule.is_some()) {
-                return Err(
-                    format!("{name:?} is a smart list; its items come from its rule").into(),
-                );
-            }
             store.add_to_list(&name, id, now_ms())?;
         }
         ListsCmd::Take { name, id } => {

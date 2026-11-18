@@ -118,9 +118,16 @@ extension PanelModel {
         case (.create(let name), _):
             Task { if await app.createList(name) { filter = .list(name) } else { NSSound.beep() } }
         case (.save(let name), _):
-            let (text, kind, bundle) = (query.trimmingCharacters(in: .whitespaces), filter.kind, source?.bundleId)
+            let (q, kind, token) = (query, filter.kind, source)
             Task {
-                guard await app.createList(name, contains: text.isEmpty ? nil : text, kind: kind, app: bundle) else { return NSSound.beep() }
+                // The same terms and pending `from:` app the search uses.
+                var terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
+                var bundle = token?.bundleId
+                if bundle == nil, let core = app.core, let named = await Self.namedApp(in: terms, core: core) {
+                    bundle = named.app.bundleId
+                    terms.removeAll { $0 == named.term }
+                }
+                guard await app.createList(name, terms: terms, kind: kind, app: bundle) else { return NSSound.beep() }
                 clearSearch()
                 filter = .list(name)
             }
@@ -130,9 +137,9 @@ extension PanelModel {
 
     private func add(_ id: Int64, to name: String) {
         Task {
-            await app.addToList(name, id)
-            if filter == .list(name) { reload() }
-            showToast("Added to \(name)")
+            let added = await app.addToList(name, id)
+            if !added || filter == .list(name) { reload() }
+            if added { showToast("Added to \(name)") } else { NSSound.beep() }
         }
     }
 
@@ -144,7 +151,7 @@ extension PanelModel {
     }
 
     private func isTaken(_ name: String) -> Bool {
-        ([Item.keysList, Item.idsList] + app.lists.map(\.name)).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        AppState.isReserved(name) || ([Item.keysList, Item.idsList] + app.lists.map(\.name)).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Prefix matches of any key first, then substring matches.

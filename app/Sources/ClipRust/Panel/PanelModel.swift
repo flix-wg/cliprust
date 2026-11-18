@@ -110,11 +110,13 @@ final class PanelModel {
         return nil
     }
 
-    /// Shows the items already in memory; reloads only if the core changed since they were loaded.
+    /// Shows the items already in memory at once, then always reloads them: other
+    /// processes and retention change the store without bumping our revision.
     func prepareForShow() {
         now = Date()
         resetSearch()
-        if isStale { reload(resetSelection: true) } else { selectedID = items.first?.id }
+        selectedID = items.first?.id
+        reload()
     }
 
     /// Resets the search while hidden, so the next open finds it loaded.
@@ -166,15 +168,12 @@ final class PanelModel {
             let terms = q.split(whereSeparator: \.isWhitespace).map(String.init)
             var named: AppSuggestion?
             var suggested: AppSuggestion?
-            if token == nil {
-                for term in terms.prefix(6) {
-                    if let name = Self.appName(in: term) {
-                        if let hit = try? await core.apps(query: name).first {
-                            named = AppSuggestion(app: hit, term: term)
-                            break
-                        }
-                    } else if suggested == nil, term.count >= 2, let hit = try? await core.apps(query: term).first {
+            if token == nil { named = await Self.namedApp(in: terms, core: core) }
+            if token == nil, named == nil {
+                for term in terms.prefix(6) where Self.appName(in: term) == nil && term.count >= 2 {
+                    if let hit = try? await core.apps(query: term).first {
                         suggested = AppSuggestion(app: hit, term: term)
+                        break
                     }
                 }
             }
@@ -206,6 +205,16 @@ final class PanelModel {
                 query = text
             }
         }
+    }
+
+    /// The first of the leading terms that names a stored app as `from:mail` or `@mail`.
+    static func namedApp(in terms: [String], core: Core) async -> AppSuggestion? {
+        for term in terms.prefix(6) {
+            if let name = appName(in: term), let hit = try? await core.apps(query: name).first {
+                return AppSuggestion(app: hit, term: term)
+            }
+        }
+        return nil
     }
 
     /// The app named by `from:mail` or `@mail`.

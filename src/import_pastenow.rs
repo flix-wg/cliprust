@@ -12,7 +12,7 @@ use serde_json::Value as Json;
 use crate::Result;
 use crate::model::{AppInfo, Capture, Kind, Rep, format};
 use crate::rules::{Rule, SortType};
-use crate::store::{Ingest, Store};
+use crate::store::{Ingest, PINNED_LIST, Store};
 
 /// Where CoreData keeps blobs too large to store inline, relative to the store.
 pub const EXTERNAL_DATA_DIR: &str = ".PasteNow_SUPPORT/_EXTERNAL_DATA";
@@ -237,6 +237,12 @@ fn import_lists(
                 continue;
             }
             Some(_) => {}
+            None if rule.is_some() && name == PINNED_LIST => {
+                report
+                    .lists_skipped
+                    .push((name, "this name is reserved for pinned items".into()));
+                continue;
+            }
             None => {
                 store.create_list(&name, rule.as_ref(), SortType::Recent)?;
                 report.lists_created += 1;

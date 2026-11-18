@@ -18,8 +18,8 @@ pub use model::{
 };
 pub use rules::{Rule, SortType};
 pub use store::{
-    AppCount, Facet, Facets, Find, IDS_LIST, Ingest, KEYS_LIST, PasteList, SecretFilter, Stats,
-    Store,
+    AppCount, Facet, Facets, Find, IDS_LIST, Ingest, KEYS_LIST, PINNED_LIST, PasteList,
+    SecretFilter, Stats, Store,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +32,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("clipboard: {0}")]
     Clipboard(String),
+    #[error("{0}")]
+    Refused(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

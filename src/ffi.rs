@@ -137,7 +137,7 @@ pub unsafe extern "C" fn cr_call(h: *const CrHandle, request: *const c_char) -> 
 
 /// Copies one stored representation (`format` as in `item.formats`, or
 /// `"image"` for the first image format) into a new buffer. Returns 0 on
-/// success, 1 if absent, 2 on error.
+/// success, 1 if absent, 2 on error or for a masked key.
 ///
 /// # Safety
 /// `h` is a live handle; `format` a valid C string; `out`/`len` writable.
@@ -155,11 +155,17 @@ pub unsafe extern "C" fn cr_item_data(
     if out.is_null() || len.is_null() {
         return 2;
     }
+    // Keys only leave the core through reveal_key.
     let found = catch_unwind(AssertUnwindSafe(|| {
-        h.store().rep(id, format).ok().flatten()
+        let store = h.store();
+        match store.summary(id) {
+            Ok(Some(s)) if is_masked(&s) => Err(()),
+            Ok(_) => Ok(store.rep(id, format).ok().flatten()),
+            Err(_) => Err(()),
+        }
     }));
     match found {
-        Ok(Some(data)) => {
+        Ok(Ok(Some(data))) => {
             let boxed = data.into_boxed_slice();
             unsafe {
                 *len = boxed.len();
@@ -167,8 +173,8 @@ pub unsafe extern "C" fn cr_item_data(
             }
             0
         }
-        Ok(None) => 1,
-        Err(_) => 2,
+        Ok(Ok(None)) => 1,
+        _ => 2,
     }
 }
 
@@ -624,5 +630,11 @@ mod tests {
         );
         let paste = json!({"method": "paste_prep", "params": {"id": id}});
         assert!(call(&h, &paste.to_string()).is_err());
+        let format = CString::new(h.store().formats(id).unwrap().remove(0)).unwrap();
+        let (mut out, mut len) = (std::ptr::null_mut(), 0);
+        assert_eq!(
+            unsafe { cr_item_data(&h, id, format.as_ptr(), &mut out, &mut len) },
+            2
+        );
     }
 }
