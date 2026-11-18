@@ -16,18 +16,32 @@ struct Shortcut: Codable, Equatable {
         self.key = key
     }
 
+    init(_ keyCode: Int, _ modifiers: Int = 0, _ key: String) {
+        self.init(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers), key: key)
+    }
+
     init?(event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         guard !flags.intersection([.command, .option, .control]).isEmpty else { return nil }
+        let label = Self.specialKeys[Int(event.keyCode)]
+            ?? (event.characters(byApplyingModifiers: []) ?? "").uppercased()
+        guard !label.isEmpty else { return nil }
+        self.init(keyCode: UInt32(event.keyCode), modifiers: Self.carbon(flags), key: label)
+    }
+
+    static func carbon(_ flags: NSEvent.ModifierFlags) -> UInt32 {
         var mods = 0
         if flags.contains(.command) { mods |= cmdKey }
         if flags.contains(.option) { mods |= optionKey }
         if flags.contains(.control) { mods |= controlKey }
         if flags.contains(.shift) { mods |= shiftKey }
-        let label = Self.specialKeys[Int(event.keyCode)]
-            ?? (event.characters(byApplyingModifiers: []) ?? "").uppercased()
-        guard !label.isEmpty else { return nil }
-        self.init(keyCode: UInt32(event.keyCode), modifiers: UInt32(mods), key: label)
+        return UInt32(mods)
+    }
+
+    static func == (a: Shortcut, b: Shortcut) -> Bool { a.keyCode == b.keyCode && a.modifiers == b.modifiers }
+
+    func matches(_ e: NSEvent) -> Bool {
+        UInt32(e.keyCode) == keyCode && Self.carbon(e.modifierFlags) == modifiers
     }
 
     var display: String {

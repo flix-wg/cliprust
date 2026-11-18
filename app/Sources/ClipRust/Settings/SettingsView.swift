@@ -22,7 +22,6 @@ private struct Caption: View {
 
 struct GeneralPane: View {
     let app: AppState
-    @Bindable private var hotkey = Hotkey.shared
     @AppStorage(Prefs.Key.panelPosition) private var position = PanelPosition.center
     @AppStorage(Prefs.Key.afterChoosing) private var after = AfterChoosing.paste
     @AppStorage(Prefs.Key.plainText) private var plainText = false
@@ -33,12 +32,6 @@ struct GeneralPane: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("Open ClipRust") {
-                    ShortcutRecorder(hotkey: hotkey)
-                }
-                if let message = hotkey.message {
-                    Caption(message)
-                }
                 Picker("Panel position", selection: $position) {
                     ForEach(PanelPosition.allCases) { Text($0.title).tag($0) }
                 }
@@ -126,7 +119,7 @@ struct ListsPane: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Show type filters (Text, Links, Images, Files)", isOn: $showTypeFilters)
+                Toggle("Show type filters (Images, Files, Links, Text)", isOn: $showTypeFilters)
                 Picker("Open panel on", selection: $openOn) {
                     Text("All").tag(OpenOn.all)
                     Text("Last used list").tag(OpenOn.last)
@@ -134,7 +127,7 @@ struct ListsPane: View {
             }
             Section {
                 if app.orderedLists.isEmpty {
-                    Text("No lists yet. Press ⌘L in the panel to create one.").foregroundStyle(.secondary)
+                    Text("No lists yet. Press \(PanelShortcuts.shared[.goToList].display) in the panel to create one.").foregroundStyle(.secondary)
                 }
                 ForEach(app.orderedLists) { list in
                     ListRow(app: app, list: list) { deleting = list }
@@ -147,7 +140,7 @@ struct ListsPane: View {
             } header: {
                 Text("Lists")
             } footer: {
-                Caption("Drag to reorder. Pinned lists come first in the filter bar. ⌃1–⌃9 jump to a chip, ⌘L to any list.")
+                Caption("Drag to reorder. Pinned lists come first in the filter bar. ←/→ or ⌃1–⌃9 move between chips, \(PanelShortcuts.shared[.goToList].display) goes to any list.")
             }
         }
         .settingsPane()
@@ -198,6 +191,42 @@ private struct ListRow: View {
         Task {
             guard await app.renameList(list.name, to: new) else { name = list.name; NSSound.beep(); return }
         }
+    }
+}
+
+struct ShortcutsPane: View {
+    @Bindable private var hotkey = Hotkey.shared
+    @Bindable private var shortcuts = PanelShortcuts.shared
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Open ClipRust") {
+                    ShortcutRecorder(shortcut: hotkey.preferred, standard: .standard) { hotkey.preferred = $0; return nil }
+                }
+                if let message = hotkey.message {
+                    Caption(message)
+                }
+            }
+            Section {
+                ForEach(PanelCommand.allCases) { command in
+                    LabeledContent(command.title) {
+                        ShortcutRecorder(shortcut: shortcuts[command], standard: command.standard) {
+                            shortcuts.set($0, for: command)
+                        }
+                    }
+                }
+            } header: {
+                Text("In the Panel")
+            } footer: {
+                HStack(alignment: .top) {
+                    Caption("⏎ pastes, ↑↓ move, ←/→ and ⇥ switch chips, ⌘1–⌘9 paste row N, ⌃1–⌃9 jump to chip N, Esc clears or closes. These stay fixed.")
+                    Spacer()
+                    Button("Reset All", action: shortcuts.resetAll).disabled(!shortcuts.isCustomized)
+                }
+            }
+        }
+        .settingsPane()
     }
 }
 

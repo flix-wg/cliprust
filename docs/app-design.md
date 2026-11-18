@@ -37,11 +37,11 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   1. **Search field.** It is always focused, uses 15 pt text and has a magnifier glyph. Placeholder: "Search clipboard". Typing filters at once, searching text, title and note, across the whole history and not just the loaded page.
      - **Source app.** A term that names an app (prefix of its name, a word of it, or a bundle-id component, so "codex" finds `com.openai.codex`) shows a "Copied from Mail · 42" row above the results. ⇥, a click, or ↑ then ⏎ turns it into an app token (icon + name capsule) before the text; the rest of the query then searches that app only. `from:mail` or `@mail` filters directly and becomes the token once a space follows. ⌫ at the start of the field or the token's × removes it. ⌘L lists apps under "Apps" too.
      - **Contacts.** Typing "phone", "number", "email", "mail address", "address" or "contact" (any prefix of three letters or more) shows a "Phone numbers · 12" row above the results; ⇥, a click, or ↑ then ⏎ turns it into a contact token, like the app token. `is:phone`, `is:email`, `is:address` or `is:contact` (any of them) become the same token once a space follows. It keeps only clips the core recognised as a phone number, email address or postal address, narrows the Contacts chip further, and the rest of the query searches within them. ⌘L lists Phone numbers, Emails and Addresses under "Contacts" when they hold clips. ⌘⇧S saves the type into the smart list.
-  2. **Filter bar.** A row of compact capsule chips: All, pinned lists (Pinned, the list of pinned items, joins them while it holds any), Keys (while key detection is on, or once a key exists), Contacts (once a phone number, email or address exists), Text · Links · Images · Files (can be hidden in Settings), then the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name). A chip shows a count only when a filter is active. ⌘←/⌘→ or ⇥/⇧⇥ moves between chips; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
+  2. **Filter bar.** A row of compact capsule chips: All, Pinned (the list of pinned items, while it holds any), the other pinned lists, Keys (while key detection is on, or once a key exists), Contacts (once a phone number, email or address exists), Images · Files · Links, the other lists in the order set in Settings (manual and smart, with an SF Symbol or emoji name), and Text last. The four type chips can be hidden in Settings. A chip shows a count only when a filter is active. ←/→ (with an empty search, or the caret at its start or end), ⌘←/⌘→ or ⇥/⇧⇥ move between chips, wrapping, and the bar scrolls the chip into view; ⌃1–⌃9 jumps to chip N, and holding ⌃ shows the numbers. The panel opens on All or the last used list (setting).
   3. **Body.** The list is on the left. A preview pane (toggled with ⌘P, on by default) takes 42 % of the width on the right.
 - **List rows.** A row is 34 pt high in Compact and 44 pt in Comfortable. Each row contains:
   - **leading:** the source app's icon at 16 pt, or a kind glyph when the app is unknown
-  - **main:** one line of preview text, or the title if one is set. For an image, a 28 pt thumbnail plus its size. For a file, the file name plus the path tail in secondary colour. For a key, the masked value in monospace plus the provider.
+  - **main:** one line of preview text, or the title if one is set. For an image, a 28 pt thumbnail plus its size. For a file, the file name plus the path tail in secondary colour. For a key, the title or the masked value in monospace, the provider and the note in secondary colour.
   - **trailing:** relative time in secondary colour, then a `⌘1`–`⌘9` hint on the first nine rows
   - a pin when the item is pinned (⌘⇧P); pinned items are never pruned
   - a note glyph when the item has a note
@@ -54,6 +54,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - **file:** a Quick Look thumbnail and the path
   - **URL:** the URL plus its host
 - **Preview footer:** source app · copied time · times used · formats · size, and an editable note field ("Add a note…").
+- **Inline edit:** ⌘N (note) or ⌘R (title) opens a field under the selected row, prefilled and focused. ⏎ saves, Esc cancels, saving it empty removes the note or title. Selecting another row cancels it. Works for keys and IDs, whose note labels them ("prod Cloudflare, DNS edit") and is searchable.
 - **Opening:** the panel shows the page already in memory and reloads only if the core changed since; the search is reset and the page reloaded when it hides, and a stored clip reloads it in the background.
 - **Empty states:** a single centred line in secondary colour, such as "Nothing copied yet" or "No matches for "foo"".
 
@@ -63,6 +64,8 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | --- | --- |
 | type | search |
 | ↑ ↓ / ⌃N ⌃P | move selection |
+| ← → (empty search, or caret at the start / end) | previous / next filter chip |
+| ⇥ ⇧⇥ / ⌘← ⌘→ | previous / next filter chip |
 | ⏎ | paste into the previous app (or copy only, per setting) |
 | ⌥⏎ | paste as plain text |
 | ⌘⏎ | copy only, no paste |
@@ -77,17 +80,20 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
 | ⌘⇧S | save search as a smart list (text, app token, `is:` type and the active type or Contacts filter) and switch to it |
 | ⌃1…⌃9 | jump to filter chip N |
-| ⌘R | rename (title) |
-| ⌘N | edit note |
+| ⌘R | rename (title), inline |
+| ⌘N | edit note, inline |
 | ⌘K | open Keys & IDs |
 | ⌘, | Settings |
+| ⌘W | close the panel |
 | Esc | close the list palette, else clear search and app token, else close |
+
+Settings → Shortcuts rebinds every action above except ⏎, Esc, ⇥, the arrows, ⌘1–⌘9, ⌃1–⌃9 and ⌃N/⌃P, which stay fixed. A shortcut held by another action, the open shortcut, a fixed key or ⌘A/⌘C/⌘V/⌘X/⌘Z is refused with the reason next to it.
 
 The list palette is a 280 pt glass overlay under the search field: type to filter (prefix matches first), ↑↓ or ⌃N/⌃P to move, ⏎ to confirm, Esc or a click outside to close. Lists are reordered, pinned, renamed and deleted in Settings → Lists.
 
 Clicking outside the panel closes it.
 
-**Right-click on a row:** Paste · Paste as Plain Text · Copy · Call / New Email / Open in Maps (contacts; the first number or address found, Maps gets the whole clip) · Add to List ▸ · Rename… · Edit Note… · Reveal in Finder (files) · Delete.
+**Right-click on a row:** Paste · Paste as Plain Text · Copy · Call / New Email / Open in Maps (contacts; the first number or address found, Maps gets the whole clip) · Pin · Add to List ▸ · Rename · Edit Note · Reveal in Finder (files) · Delete.
 
 ### 3. Keys & IDs window
 
@@ -114,12 +120,14 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
 ### 4. Settings window (tabs, standard `Settings` scene)
 
 - **General:**
-  - Open shortcut (recorder, default ⇧⌘V)
   - Launch at login (`SMAppService.mainApp`)
   - Panel position
   - After choosing an item: Paste into the active app / Copy only
   - Always paste as plain text
   - Show menu-bar icon
+- **Shortcuts:**
+  - Open ClipRust (recorder, default ⇧⌘V)
+  - In the Panel: a recorder per action with a per-row reset and Reset All; stored as one `panelShortcuts` dictionary in UserDefaults
 - **Appearance:**
   - Density: Compact / Comfortable
   - Show preview pane
@@ -155,7 +163,9 @@ app/
     Panel/PreviewPane.swift
     Keys/KeysView.swift         Keys & IDs window
     Settings/SettingsView.swift
-    System/Hotkey.swift         Carbon RegisterEventHotKey wrapper + ShortcutRecorder view
+    System/Hotkey.swift         Shortcut + Carbon RegisterEventHotKey wrapper
+    System/PanelShortcuts.swift panel actions and their editable shortcuts
+    System/ShortcutRecorder.swift recorder view for both
     System/Paster.swift         Accessibility check/prompt, CGEvent ⌘V to the previous app
     System/Prefs.swift          @AppStorage keys and defaults
   scripts/build-app.sh          cargo build --release --features ffi → swift build -c release

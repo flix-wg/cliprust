@@ -23,8 +23,6 @@ enum PaletteRow: Hashable {
 }
 
 extension ItemFilter {
-    static let kinds: [ItemFilter] = [.kind(.text), .kind(.url), .kind(.image), .kind(.file)]
-
     var key: String {
         switch self {
         case .all: "all"

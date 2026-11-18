@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Observation
 
 enum ItemFilter: Hashable {
@@ -24,6 +24,14 @@ enum PanelAction {
     case choose(ChooseMode)
     case addToList(String), newList, removeFromList(String), togglePin
     case rename, note, revealInFinder, quickLook, delete, openContact(String)
+}
+
+/// The note or title being edited inline under the selected row.
+struct InlineEdit: Equatable {
+    enum Field { case note, title }
+    let field: Field
+    let id: Int64
+    var text: String
 }
 
 /// An app named by a search term; accepting it turns the term into the app token.
@@ -110,7 +118,14 @@ final class PanelModel {
         }
     }
     var items: [Item] = []
-    var selectedID: Int64? { didSet { if selectedID != oldValue { loadDetail() } } }
+    var selectedID: Int64? {
+        didSet {
+            guard selectedID != oldValue else { return }
+            if editing?.id != selectedID { editing = nil }
+            loadDetail()
+        }
+    }
+    var editing: InlineEdit?
     var detail: Item?
     var loaded = false
     var isVisible = false
@@ -130,17 +145,18 @@ final class PanelModel {
         self.app = app
     }
 
-    /// Bar order: All, pinned lists, Keys, Contacts, the type filters, then the other lists.
+    /// Bar order: All, Pinned, the other pinned lists, Keys, Contacts, Images, Files, Links, the other lists, Text last.
     /// Pinned shows only while it holds items.
     func filters(kinds: Bool = Prefs.showTypeFilters) -> [ItemFilter] {
         let lists = app.orderedLists.map(\.name)
             .filter { $0 != Item.pinnedList || !app.pinnedIDs.isEmpty || filter == .list($0) }
-        let pinned = lists.filter(app.pinnedLists.contains)
+        let pinned = lists.filter { $0 == Item.pinnedList } + lists.filter { $0 != Item.pinnedList && app.pinnedLists.contains($0) }
         var out: [ItemFilter] = [.all] + pinned.map(ItemFilter.list)
         if app.settings.detectKeys || app.hasKeysList { out.append(.keys) }
         if app.hasContacts || filter == .contacts { out.append(.contacts) }
-        if kinds { out += ItemFilter.kinds }
-        return out + lists.filter { !pinned.contains($0) }.map(ItemFilter.list)
+        if kinds { out += [.kind(.image), .kind(.file), .kind(.url)] }
+        out += lists.filter { !pinned.contains($0) }.map(ItemFilter.list)
+        return kinds ? out + [.kind(.text)] : out
     }
     var selectedIndex: Int? { items.firstIndex { $0.id == selectedID } }
     var selected: Item? { selectedIndex.map { items[$0] } }
@@ -233,6 +249,7 @@ final class PanelModel {
 
     private func resetSearch() {
         palette = nil
+        editing = nil
         controlHeld = false
         suggestionSelected = false
         let last = Prefs.openOn == .last ? Prefs.lastFilter.flatMap(ItemFilter.init(key:)) : nil
@@ -377,6 +394,39 @@ final class PanelModel {
         guard !items.isEmpty else { return }
         let i = selectedIndex.map { $0 + delta } ?? 0
         selectedID = items[min(max(i, 0), items.count - 1)].id
+    }
+
+    /// Opens the inline field, prefilled from a fresh copy so edits made elsewhere aren't lost.
+    func beginEdit(_ field: InlineEdit.Field, _ item: Item) {
+        palette = nil
+        suggestionSelected = false
+        selectedID = item.id
+        Task {
+            guard let full = try? await app.core?.item(item.id), selectedID == item.id else { return NSSound.beep() }
+            detail = full
+            editing = InlineEdit(field: field, id: item.id, text: (field == .note ? full.note : full.title) ?? "")
+        }
+    }
+
+    /// Saves the inline field; an empty one removes the note or title.
+    func commitEdit() {
+        guard let edit = editing, let core = app.core else { return }
+        editing = nil
+        let text = edit.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = text.isEmpty ? nil : text
+        func apply(_ item: inout Item) {
+            if edit.field == .note { item.note = value } else { item.title = value }
+        }
+        if let i = items.firstIndex(where: { $0.id == edit.id }) { apply(&items[i]) }
+        if detail?.id == edit.id { apply(&detail!) }
+        Task {
+            do {
+                if edit.field == .note { try await core.setNote(edit.id, value) } else { try await core.setTitle(edit.id, value) }
+            } catch {
+                NSSound.beep()
+            }
+            reload()
+        }
     }
 
     func cycleFilter(by delta: Int) {

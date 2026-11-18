@@ -13,6 +13,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 - **Search by app.** Type `mail` or `codex` to filter by the app you copied from, or use `from:mail`.
 - **Phone numbers, emails, addresses.** Recognised in short clips; type `phone`, `email` or `address` (or `is:phone`), or use the Contacts chip, then call, mail or map them from the row menu.
 - **Lists.** Manual lists, saved searches, pinned items. Jump between them from the keyboard.
+- **Keyboard first.** ← and → walk the filter chips, ⌘N labels the selected clip with a note right in the list (handy for keys), and every panel shortcut can be changed in Settings → Shortcuts.
 - **Keys stay hidden.** API keys and tokens are recognised, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them.
 - **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.
 - **Every format.** Plain text, RTF, HTML, images and files, deduplicated and compressed with zstd.
@@ -26,15 +27,24 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 | ⇧⌘V | Open the panel |
 | ⏎ / ⌥⏎ / ⌘⏎ | Paste / paste as plain text / copy only |
 | ⌘1 … ⌘9 | Paste row N |
-| ⌘L | Go to a list or app |
+| ↑ ↓ / ⌃N ⌃P | Move the selection |
+| ← → | Previous / next filter (with an empty search, or the caret at its start / end) |
+| ⇥ ⇧⇥ / ⌘← ⌘→ | Previous / next filter |
 | ⌃1 … ⌃9 | Jump to filter N |
+| ⌘L | Go to a list or app |
 | ⌘D | Add to list |
 | ⌘⇧P | Pin |
 | ⌘⇧S | Save search as list |
-| ␣ | Quick Look |
+| ⌘N | Edit the note inline (⏎ saves, Esc cancels, empty removes it) |
+| ⌘R | Rename inline |
+| ␣ | Quick Look (with an empty search) |
+| ⌘⌫ | Delete |
+| ⌘P | Show or hide the preview |
 | ⌘K | Keys & IDs |
+| ⌘, | Settings |
+| Esc / ⌘W | Clear the search, then close / close |
 
-All shortcuts are listed in [docs/app-design.md](docs/app-design.md).
+The open shortcut and every panel shortcut except ⏎, Esc, ⇥, the arrows, ⌘1–⌘9 and ⌃1–⌃9 can be changed in Settings → Shortcuts. More detail in [docs/app-design.md](docs/app-design.md).
 
 ## Build
 

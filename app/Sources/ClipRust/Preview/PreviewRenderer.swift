@@ -26,6 +26,16 @@ enum PreviewRenderer {
                 render(view, size: Prefs.defaultPanelSize, appearance: appearance, to: dir.appendingPathComponent("\(shot)-\(suffix).png"))
             }
 
+            let note = PanelModel(app: app)
+            note.items = SampleData.items
+            note.loaded = true
+            note.isVisible = true
+            note.selectedID = 8
+            note.detail = SampleData.items[7]
+            note.editing = InlineEdit(field: .note, id: 8, text: "staging GitHub, repo read")
+            render(PanelView(model: note).environment(\.renderingPreview, true), size: Prefs.defaultPanelSize,
+                   appearance: appearance, to: dir.appendingPathComponent("panel-note-\(suffix).png"))
+
             for (shot, text, held) in [("panel-palette", "", true), ("panel-palette-apps", "ma", false)] {
                 let palette = PanelModel(app: app)
                 palette.items = SampleData.items

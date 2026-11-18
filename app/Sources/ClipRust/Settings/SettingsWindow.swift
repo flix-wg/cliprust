@@ -18,6 +18,7 @@ final class SettingsWindowController {
         tabs.tabStyle = .toolbar
         let panes: [(String, String, AnyView)] = [
             ("General", "gearshape", AnyView(GeneralPane(app: app))),
+            ("Shortcuts", "keyboard", AnyView(ShortcutsPane())),
             ("Appearance", "paintbrush", AnyView(AppearancePane())),
             ("Lists", "list.bullet", AnyView(ListsPane(app: app))),
             ("History", "clock.arrow.circlepath", AnyView(HistoryPane(app: app))),

@@ -191,69 +191,91 @@ final class PanelController: NSObject, NSWindowDelegate {
         let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
         let code = Int(e.keyCode)
-        let item = model.selected
-        if paletteKey(key, mods) { return true }
+        if model.editing != nil { return handleEditKey(code, mods) }
+        let command = PanelShortcuts.shared.command(for: e)
+        if let command, paletteKey(command) { return true }
         if model.palette != nil { return handlePaletteKey(code, mods, key) }
+        if handleFixedKey(code, mods, key) { return true }
+        // A shortcut without ⌘, ⌥ or ⌃ (␣ for Quick Look) only acts while the search is empty.
+        guard let command, !mods.isDisjoint(with: [.command, .option, .control]) || model.query.isEmpty else { return false }
+        let item = model.selected
+        switch command {
+        case .goToList, .addToList, .saveSearch: break
+        case .plainPaste: run(.choose(.plain), item)
+        case .copyOnly: run(.choose(.copyOnly), item)
+        case .pin: run(.togglePin, item)
+        case .note: run(.note, item)
+        case .rename: run(.rename, item)
+        case .quickLook: run(.quickLook, item)
+        case .delete: run(.delete, item)
+        case .keys: openKeys()
+        case .preview: UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Prefs.Key.showPreview), forKey: Prefs.Key.showPreview)
+        case .settings: openSettings()
+        case .close: close()
+        }
+        return true
+    }
 
+    private func handleFixedKey(_ code: Int, _ mods: NSEvent.ModifierFlags, _ key: String) -> Bool {
         switch (code, mods) {
         case (kVK_DownArrow, []): model.move(by: 1)
         case (kVK_UpArrow, []): model.move(by: -1)
         case (kVK_PageDown, []): model.move(by: 8)
         case (kVK_PageUp, []): model.move(by: -8)
+        case (kVK_LeftArrow, []) where caretAtEdge(end: false): model.cycleFilter(by: -1)
+        case (kVK_RightArrow, []) where caretAtEdge(end: true): model.cycleFilter(by: 1)
         case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []):
             if model.suggestionSelected || (model.items.isEmpty && model.suggestion != nil) {
                 model.acceptSuggestion()
             } else {
-                run(.choose(.standard), item)
+                run(.choose(.standard), model.selected)
             }
-        case (kVK_Return, .option): run(.choose(.plain), item)
-        case (kVK_Return, .command): run(.choose(.copyOnly), item)
         case (kVK_Escape, []): model.hasSearch ? model.clearSearch() : close()
         case (kVK_Tab, []): if !model.acceptSuggestion() { model.cycleFilter(by: 1) }
-        case (kVK_Delete, []) where (model.source != nil || model.contactToken != nil) && caretAtStart: model.removeLastToken()
+        case (kVK_Delete, []) where (model.source != nil || model.contactToken != nil) && caretAtEdge(end: false):
+            model.removeLastToken()
         case (kVK_Tab, .shift): model.cycleFilter(by: -1)
         case (kVK_LeftArrow, .command): model.cycleFilter(by: -1)
         case (kVK_RightArrow, .command): model.cycleFilter(by: 1)
-        case (kVK_Space, []) where model.query.isEmpty: run(.quickLook, item)
-        case (kVK_Delete, .command): run(.delete, item)
         case (_, .control) where ("1"..."9").contains(key) && key.count == 1:
             if !model.jump(to: Int(key)! - 1) { NSSound.beep() }
-        case (_, [.command, .shift]) where key == "p": run(.togglePin, item)
+        case (_, .command) where ("1"..."9").contains(key) && key.count == 1:
+            let i = Int(key)! - 1
+            guard i < model.items.count else { NSSound.beep(); return true }
+            perform(.choose(.standard), model.items[i])
         case (_, .control) where key == "n": model.move(by: 1)
         case (_, .control) where key == "p": model.move(by: -1)
-        case (_, .command):
-            switch key {
-            case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-                let i = Int(key)! - 1
-                guard i < model.items.count else { NSSound.beep(); return true }
-                perform(.choose(.standard), model.items[i])
-            case "p": UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Prefs.Key.showPreview), forKey: Prefs.Key.showPreview)
-            case "r": run(.rename, item)
-            case "n": run(.note, item)
-            case "k": openKeys()
-            case ",": openSettings()
-            case "w": close()
-            default: return false
-            }
-        default:
-            return false
+        default: return false
         }
         return true
     }
 
-    private var caretAtStart: Bool {
-        (panel.firstResponder as? NSTextView)?.selectedRange() == NSRange(location: 0, length: 0)
+    /// ⏎ saves the inline note or title, Esc cancels; everything else goes to its field.
+    private func handleEditKey(_ code: Int, _ mods: NSEvent.ModifierFlags) -> Bool {
+        switch (code, mods) {
+        case (kVK_Escape, []): model.editing = nil
+        case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []): model.commitEdit()
+        case (kVK_Tab, _): break
+        default: return false
+        }
+        return true
     }
 
-    /// ⌘L, ⌘D and ⌘⇧S open the list palette in any state.
-    private func paletteKey(_ key: String, _ mods: NSEvent.ModifierFlags) -> Bool {
+    /// True while the focused field is empty or its caret sits at the start (or end).
+    private func caretAtEdge(end: Bool) -> Bool {
+        guard let field = panel.firstResponder as? NSTextView else { return model.query.isEmpty }
+        return field.selectedRange() == NSRange(location: end ? (field.string as NSString).length : 0, length: 0)
+    }
+
+    /// Go to list, add to list and save search open the list palette in any state.
+    private func paletteKey(_ command: PanelCommand) -> Bool {
         let mode: ListPalette.Mode
-        switch (key, mods) {
-        case ("l", .command): mode = .go
-        case ("d", .command):
+        switch command {
+        case .goToList: mode = .go
+        case .addToList:
             guard let id = model.selectedID else { NSSound.beep(); return true }
             mode = .add(id)
-        case ("s", [.command, .shift]): mode = .saveSearch
+        case .saveSearch: mode = .saveSearch
         default: return false
         }
         if !model.openPalette(mode) { NSSound.beep() }
@@ -303,23 +325,10 @@ final class PanelController: NSObject, NSWindowDelegate {
                 model.reload()
             }
         case .rename:
-            prompt(title: "Rename Item", message: "A title replaces the preview in the list. Leave it empty to remove it.",
-                   value: item.title ?? "", placeholder: item.oneLine, confirm: "Rename") { [weak self] title in
-                guard let self, let core = app.core else { return }
-                Task {
-                    try? await core.setTitle(item.id, title.trimmingCharacters(in: .whitespaces))
-                    self.model.reload()
-                }
-            }
+            model.beginEdit(.title, item)
         case .note:
             guard Features.notes else { NSSound.beep(); return }
-            prompt(title: "Note", message: nil, value: item.note ?? "", placeholder: "Add a note…", confirm: "Save") { [weak self] note in
-                guard let self, let core = app.core else { return }
-                Task {
-                    try? await core.setNote(item.id, note.isEmpty ? nil : note)
-                    self.model.reload()
-                }
-            }
+            model.beginEdit(.note, item)
         case .revealInFinder:
             let urls = (model.detail?.id == item.id ? model.detail! : item).fileURLs
             guard !urls.isEmpty else { NSSound.beep(); return }
@@ -335,26 +344,6 @@ final class PanelController: NSObject, NSWindowDelegate {
                 guard let url = Item.contactURL(type, in: text) else { return NSSound.beep() }
                 close()
                 NSWorkspace.shared.open(url)
-            }
-        }
-    }
-
-    private func prompt(title: String, message: String?, value: String, placeholder: String, confirm: String,
-                        completion: @escaping (String) -> Void) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message ?? ""
-        let field = NSTextField(string: value)
-        field.placeholderString = placeholder
-        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
-        alert.accessoryView = field
-        alert.addButton(withTitle: confirm)
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: panel) { [weak self] response in
-            MainActor.assumeIsolated {
-                if response == .alertFirstButtonReturn { completion(field.stringValue) }
-                self?.panel.makeKey()
             }
         }
     }

@@ -68,6 +68,9 @@ struct ItemRow: View {
                 if let provider = item.secretProvider {
                     Text(provider).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
                 }
+                if let note = item.note, !note.isEmpty {
+                    Text(note.collapsingWhitespace).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
         } else if item.kind == .image, item.title == nil {
             HStack(spacing: 8) {

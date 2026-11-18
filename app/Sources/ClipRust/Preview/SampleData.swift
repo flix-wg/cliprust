@@ -26,7 +26,8 @@ enum SampleData {
         secret(8, "ghp_••••••••••••••••••••Xk2a", provider: "GitHub", url: "https://github.com/settings/tokens", minutes: 1500),
         item(9, .url, "https://github.com/rust-lang/rust/issues/123456", app: "com.apple.Safari", minutes: 2900, size: 47, formats: ["text"]),
         item(10, .text, "Meeting moved to Thursday 14:00, room 2.14", app: "com.apple.mail", minutes: 4400, size: 42, formats: ["text"]),
-        secret(11, "••••••••••••••••a91c", provider: "Cloudflare", url: "https://dash.cloudflare.com/profile/api-tokens", minutes: 9000),
+        secret(11, "••••••••••••••••a91c", provider: "Cloudflare", url: "https://dash.cloudflare.com/profile/api-tokens", minutes: 9000,
+               note: "prod Cloudflare, DNS edit"),
         item(12, .text, "Grüezi mitenand", app: "com.apple.Notes", minutes: 14000, size: 16, formats: ["text"]),
     ]
 
@@ -36,10 +37,10 @@ enum SampleData {
              text: text, formats: formats)
     }
 
-    static func secret(_ id: Int64, _ masked: String, provider: String, url: String, minutes: Double) -> Item {
+    static func secret(_ id: Int64, _ masked: String, provider: String, url: String, minutes: Double, note: String? = nil) -> Item {
         Item(id: id, kind: .text, title: nil, preview: masked, app: "com.apple.Safari", sourceUrl: url,
              secretProvider: provider, createdAt: ago(minutes * 2), lastUsedAt: ago(minutes), byteSize: 64,
-             text: masked, formats: ["text"])
+             text: masked, formats: ["text"], note: note)
     }
 
     static let apps: [SourceApp] = [

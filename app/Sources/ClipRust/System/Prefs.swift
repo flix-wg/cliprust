@@ -52,6 +52,7 @@ enum Prefs {
         static let lastFilter = "lastFilter"
         static let pinnedLists = "pinnedLists"
         static let listOrder = "listOrder"
+        static let panelShortcuts = "panelShortcuts"
     }
 
     static let defaultPanelSize = NSSize(width: 680, height: 440)

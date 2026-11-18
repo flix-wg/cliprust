@@ -61,7 +61,7 @@ struct PanelView: View {
         .onChange(of: model.isVisible, initial: true) { _, visible in
             if visible { searchFocused = true }
         }
-        .onChange(of: model.palette == nil) { _, closed in
+        .onChange(of: model.palette == nil && model.editing == nil) { _, closed in
             if closed { searchFocused = true }
         }
     }
@@ -197,6 +197,9 @@ struct ItemList: View {
                                 if NSApp.currentEvent?.clickCount == 2 { model.perform(.choose(.standard), item) }
                             }
                             .contextMenu { RowMenu(model: model, item: item) }
+                        if model.editing?.id == item.id {
+                            InlineEditField(model: model).id("edit")
+                        }
                     }
                 }
                 .padding(6)
@@ -208,6 +211,9 @@ struct ItemList: View {
             .onChange(of: model.suggestionSelected) { _, on in
                 if on { proxy.scrollTo("suggestion") }
             }
+            .onChange(of: model.editing?.id) { _, id in
+                if id != nil { proxy.scrollTo("edit") }
+            }
         }
         .overlay {
             if model.loaded, model.items.isEmpty, model.suggestion == nil {
@@ -218,6 +224,36 @@ struct ItemList: View {
                     .multilineTextAlignment(.center)
             }
         }
+    }
+}
+
+/// The note or title field under the selected row: ⏎ saves, Esc cancels.
+private struct InlineEditField: View {
+    @Bindable var model: PanelModel
+    @FocusState private var focused: Bool
+    @AppStorage(Prefs.Key.density) private var density = Density.compact
+
+    var body: some View {
+        let note = model.editing?.field == .note
+        HStack(spacing: 8) {
+            Image(systemName: note ? "note.text" : "character.cursor.ibeam")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            TextField(note ? "Add a note…" : "Title", text: Binding(get: { model.editing?.text ?? "" },
+                                                                    set: { model.editing?.text = $0 }))
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($focused)
+            Text("⏎ Save  Esc Cancel")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 10)
+        .frame(height: density.rowHeight)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.accentColor.opacity(0.5)))
+        .onAppear { focused = true }
     }
 }
 
@@ -248,9 +284,9 @@ struct RowMenu: View {
             Button("Remove from \(list)") { model.perform(.removeFromList(list), item) }
         }
         Divider()
-        Button("Rename…") { model.perform(.rename, item) }
+        Button("Rename") { model.perform(.rename, item) }
         if Features.notes {
-            Button("Edit Note…") { model.perform(.note, item) }
+            Button("Edit Note") { model.perform(.note, item) }
         }
         if item.kind == .file {
             Button("Reveal in Finder") { model.perform(.revealInFinder, item) }

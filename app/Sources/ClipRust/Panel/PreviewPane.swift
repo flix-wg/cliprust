@@ -243,7 +243,7 @@ private struct KeyPreview: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            Text("The full value stays hidden. Reveal it in Keys & IDs (⌘K).")
+            Text("The full value stays hidden. Reveal it in Keys & IDs (\(PanelShortcuts.shared[.keys].display)).")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -279,7 +279,7 @@ private struct PreviewFooter: View {
                         let id = item.id, text = note
                         Task { try? await Thumbnails.shared.core?.setNote(id, text.isEmpty ? nil : text) }
                     }
-                    .onChange(of: item.id, initial: true) { note = item.note ?? "" }
+                    .onChange(of: "\(item.id) \(item.note ?? "")", initial: true) { note = item.note ?? "" }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
