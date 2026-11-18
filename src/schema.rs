@@ -117,12 +117,20 @@ PRAGMA user_version = 3;
 ";
 
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
-    // Only takes effect before the first table exists, i.e. on a new file.
-    conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-    conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
+    // Both persist in the file, so only a new one is written; setting them
+    // again on every open rewrites the header and syncs.
+    let new: i64 = conn.pragma_query_value(None, "page_count", |r| r.get(0))?;
+    if new == 0 {
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+    }
+    let mode: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
+    }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    // A checkpoint that resets the WAL also truncates it to this size.
-    conn.pragma_update_and_check(None, "journal_size_limit", 4 << 20, |_| Ok(()))?;
+    // Checkpoint small and often; a checkpoint that resets the WAL also truncates it to this size.
+    conn.pragma_update_and_check(None, "wal_autocheckpoint", 200, |_| Ok(()))?;
+    conn.pragma_update_and_check(None, "journal_size_limit", 1 << 20, |_| Ok(()))?;
     conn.pragma_update(None, "foreign_keys", true)?;
     // Deleted clips and replaced secrets are overwritten, not left in free pages.
     conn.pragma_update(None, "secure_delete", true)?;
@@ -139,6 +147,11 @@ pub(crate) fn checkpoint(conn: &Connection) {
     let _ = conn.busy_timeout(std::time::Duration::ZERO);
     let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     let _ = conn.busy_timeout(BUSY_TIMEOUT);
+}
+
+/// Copies what it can of the WAL back without waiting for or blocking anyone.
+pub(crate) fn checkpoint_passive(conn: &Connection) {
+    let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
 }
 
 pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {

@@ -1,6 +1,5 @@
 import CCliprust
 import Foundation
-import Synchronization
 
 struct CoreError: LocalizedError {
     let message: String
@@ -12,10 +11,6 @@ final class Core: @unchecked Sendable {
     private let handle: OpaquePointer
     private let queue: DispatchQueue
     private var onEvent: (@MainActor (CoreEvent) -> Void)?
-    /// Bumped by every call that may change items and by every stored clip.
-    let revision = Atomic<Int>(0)
-    private static let reads: Set<String> = ["items", "item", "apps", "secrets", "secret_facets", "lists", "list_ids",
-                                             "settings", "excludes", "stats", "reveal_key"]
 
     static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -45,23 +40,22 @@ final class Core: @unchecked Sendable {
         }
     }
 
-    private func send(_ method: String, _ params: [String: Any]) throws -> Data {
+    private func send<T: Decodable>(_ method: String, _ params: [String: Any]) throws -> T {
         let request = try JSONSerialization.data(withJSONObject: ["method": method, "params": params])
         guard let out = String(decoding: request, as: UTF8.self).withCString({ cr_call(handle, $0) }) else {
             throw CoreError(message: "The core returned no response.")
         }
         defer { cr_free_string(out) }
-        let envelope = try JSONSerialization.jsonObject(with: Data(bytes: out, count: strlen(out)))
-        guard let dict = envelope as? [String: Any] else { throw CoreError(message: "Malformed response.") }
-        if let err = dict["err"] as? String { throw CoreError(message: err) }
-        if !Self.reads.contains(method) { revision.wrappingAdd(1, ordering: .relaxed) }
-        return try JSONSerialization.data(withJSONObject: dict["ok"] ?? NSNull(), options: .fragmentsAllowed)
+        let envelope = try Self.decoder.decode(Envelope<T>.self, from: Data(bytesNoCopy: out, count: strlen(out), deallocator: .none))
+        if let err = envelope.err { throw CoreError(message: err) }
+        guard let ok = envelope.ok else { throw CoreError(message: "Malformed response.") }
+        return ok
     }
 
     func call<T: Decodable>(_ method: String, _ params: [String: Any] = [:], as type: T.Type = T.self) async throws -> T {
         try await withCheckedThrowingContinuation { cont in
             queue.async {
-                cont.resume(with: Result { try Self.decoder.decode(T.self, from: self.send(method, params)) })
+                cont.resume(with: Result { try self.send(method, params) })
             }
         }
     }
@@ -93,13 +87,26 @@ final class Core: @unchecked Sendable {
             let core = Unmanaged<Core>.fromOpaque(ctx).takeUnretainedValue()
             let data = Data(bytes: json, count: strlen(json))
             guard let event = try? Core.decoder.decode(CoreEvent.self, from: data) else { return }
-            if event.type == "stored" { core.revision.wrappingAdd(1, ordering: .relaxed) }
             DispatchQueue.main.async { MainActor.assumeIsolated { core.onEvent?(event) } }
         }, ctx)
     }
 
     private struct Ignored: Decodable {
         init(from decoder: Decoder) throws {}
+    }
+
+    /// `{"ok": T}` or `{"err": "..."}`; `ok` may be JSON null, which only an optional or `Ignored` accepts.
+    private struct Envelope<T: Decodable>: Decodable {
+        let ok: T?
+        let err: String?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Key.self)
+            err = try c.decodeIfPresent(String.self, forKey: .err)
+            ok = err == nil ? try c.decode(T.self, forKey: .ok) : nil
+        }
+
+        private enum Key: CodingKey { case ok, err }
     }
 }
 
@@ -134,6 +141,12 @@ extension Core {
     func setNote(_ id: Int64, _ note: String?) async throws {
         try await run("set_note", ["id": id, "note": note.map { $0 as Any } ?? NSNull()])
     }
+    /// Items per contact type, and `any`.
+    func contactCounts() async throws -> [String: Int] { try await call("counts") }
+    /// Differs from an earlier value once any process committed a change.
+    func dataVersion() async throws -> [Int] { try await call("data_version") }
+    /// Folds the WAL back without waiting for other connections.
+    func checkpoint() async { try? await run("checkpoint") }
     func lists() async throws -> [ClipList] { try await call("lists") }
     /// With `terms`, `app` or `contact`, a smart list matching every term (and `kind`, if given).
     func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil,

@@ -178,6 +178,12 @@ pub unsafe extern "C" fn cr_item_data(
     }
 }
 
+/// Tells the watcher that the app itself wrote pasteboard change `count`.
+#[unsafe(no_mangle)]
+pub extern "C" fn cr_own_change(count: isize) {
+    monitor::own_change(count);
+}
+
 pub type EventCallback = extern "C" fn(event_json: *const c_char, ctx: *mut c_void);
 
 struct Sink {
@@ -354,9 +360,24 @@ fn call(h: &CrHandle, request: &str) -> R<Value> {
             }
             platform::with_autorelease_pool(|| -> R<()> {
                 let ctx = clipboard_rs::ClipboardContext::new().map_err(|e| e.to_string())?;
-                capture::write(&ctx, &item.reps, plain).map_err(e)
+                capture::write(&ctx, &item.reps, plain).map_err(e)?;
+                #[cfg(target_os = "macos")]
+                monitor::own_change(platform::pasteboard_state().0);
+                Ok(())
             })?;
             store.touch(id, now).map_err(e)?;
+            Value::Null
+        }
+        "counts" => Value::from_iter(
+            store
+                .contact_counts()
+                .map_err(e)?
+                .into_iter()
+                .map(|(name, n)| (name.to_owned(), json!(n))),
+        ),
+        "data_version" => json!(store.data_version().map_err(e)?),
+        "checkpoint" => {
+            store.checkpoint();
             Value::Null
         }
         "reveal_key" => {
@@ -635,6 +656,10 @@ mod tests {
             (&json!(phone), &json!(["phone"]))
         );
         assert_eq!(req("items", json!({"contact": "email"})), json!([]));
+        assert_eq!(
+            req("counts", Value::Null),
+            json!({"phone": 1, "email": 0, "address": 0, "any": 1})
+        );
         assert_eq!(req("item", json!({"id": id}))["contact"], json!([]));
         assert_eq!(from("com.apple.mail"), json!([]));
         req("add_to_list", json!({"name": "Pinned", "id": id}));

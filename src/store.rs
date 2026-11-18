@@ -112,7 +112,10 @@ pub struct Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        schema::checkpoint(&self.conn);
+        // A reader leaves the WAL to the writers.
+        if self.conn.total_changes() > 0 {
+            schema::checkpoint(&self.conn);
+        }
     }
 }
 
@@ -250,8 +253,11 @@ impl Store {
                      source_domain = coalesce(?5, source_domain), byte_size = ?6 WHERE id = ?7",
                     params![now, app_id, cap.source_url, cap.source_title, domain, byte_size, id],
                 )?;
-                tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
-                insert_reps(&tx, id, &cap.reps)?;
+                // Most re-copies bring the same formats; rewriting them costs pages of WAL.
+                if load_reps(&tx, id)? != cap.reps {
+                    tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
+                    insert_reps(&tx, id, &cap.reps)?;
+                }
             }
             let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
             if let Some(secret) = &cap.secret
@@ -448,6 +454,38 @@ impl Store {
         };
         let reps = load_reps(&self.conn, id)?;
         Ok(Some(Item { summary, reps }))
+    }
+
+    /// Items per contact type, and with any contact under `"any"`.
+    pub fn contact_counts(&self) -> Result<Vec<(&'static str, i64)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT contact, count(*) FROM paste_items WHERE contact IS NOT NULL GROUP BY 1",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut out = vec![("phone", 0), ("email", 0), ("address", 0), ("any", 0)];
+        for row in rows {
+            let (contact, n) = row?;
+            for c in contacts::split(Some(&contact)) {
+                if let Some(slot) = out.iter_mut().find(|(name, _)| *name == c.as_str()) {
+                    slot.1 += n;
+                }
+            }
+            out[3].1 += n;
+        }
+        Ok(out)
+    }
+
+    /// Changes whenever this or any other connection commits a change.
+    pub fn data_version(&self) -> Result<(i64, u64)> {
+        let others = self
+            .conn
+            .pragma_query_value(None, "data_version", |r| r.get(0))?;
+        Ok((others, self.conn.total_changes()))
+    }
+
+    /// Folds the WAL back into the file as far as no reader or writer prevents it.
+    pub fn checkpoint(&self) {
+        schema::checkpoint_passive(&self.conn);
     }
 
     pub fn touch(&self, id: i64, now: i64) -> Result<bool> {
@@ -1020,7 +1058,16 @@ mod tests {
             name: None,
             path: None,
         });
+        let data_rows = |s: &Store| -> String {
+            s.conn
+                .query_row("SELECT group_concat(id) FROM paste_item_data", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let rows = data_rows(&s);
         assert_eq!(s.ingest(&again, 3).unwrap(), Ingest::Duplicate(hello));
+        assert_eq!(data_rows(&s), rows);
         let recent = s.recent(10).unwrap();
         assert_eq!(ids(recent.clone()), [hello, other]);
         assert_eq!(recent[0].app_bundle_id.as_deref(), Some("com.b"));

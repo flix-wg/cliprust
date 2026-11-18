@@ -22,6 +22,9 @@ int32_t cr_item_data(const CrHandle *h, int64_t id, const char *format, uint8_t 
 /* Starts the clipboard watcher thread once; cb runs on that thread. */
 void cr_watch(const CrHandle *h, cr_event_cb cb, void *ctx);
 
+/* The app wrote pasteboard change `count` itself; the watcher skips it. */
+void cr_own_change(intptr_t count);
+
 void cr_free_string(char *s);
 void cr_free_bytes(uint8_t *p, size_t len);
 

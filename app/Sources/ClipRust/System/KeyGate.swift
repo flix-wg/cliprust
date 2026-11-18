@@ -1,4 +1,5 @@
 import AppKit
+import CCliprust
 import LocalAuthentication
 
 /// Touch ID or password before a key's value leaves the database.
@@ -32,10 +33,12 @@ enum Clipboard {
         entry.setString(value, forType: .string)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([entry])
+        cr_own_change(NSPasteboard.general.changeCount)
     }
 
     static func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+        cr_own_change(NSPasteboard.general.changeCount)
     }
 }

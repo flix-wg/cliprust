@@ -101,13 +101,13 @@ final class PanelModel {
     static let countCap = 1000
 
     let app: AppState
-    var query = "" { didSet { if query != oldValue { reload(resetSelection: true) } } }
+    var query = "" { didSet { if query != oldValue { reload(resetSelection: true, debounce: true) } } }
     /// The app token in the search field: only items copied from that app.
     var source: SourceApp? { didSet { if source?.bundleId != oldValue?.bundleId { reload(resetSelection: true) } } }
     /// The contact token: only phone numbers, emails, addresses or any of them.
     var contactToken: ContactFilter? { didSet { if contactToken != oldValue { reload(resetSelection: true) } } }
     var suggestion: Suggestion?
-    /// Items per contact type, counted once per open up to `countCap`.
+    /// Items per contact type, counted once per open.
     var contactCounts: [ContactFilter: Int]?
     var suggestionSelected = false
     var filter: ItemFilter = .all {
@@ -139,7 +139,8 @@ final class PanelModel {
     @ObservationIgnored var perform: (PanelAction, Item) -> Void = { _, _ in }
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var toastGeneration = 0
-    @ObservationIgnored private var loadedRevision = -1
+    /// The core's data version the items were loaded at; nil after a failed load.
+    @ObservationIgnored private var loadedVersion: [Int]?
 
     init(app: AppState) {
         self.app = app
@@ -199,25 +200,33 @@ final class PanelModel {
         return nil
     }
 
-    /// Shows the items already in memory at once, then always reloads them: other
-    /// processes and retention change the store without bumping our revision.
+    /// Shows the items already in memory at once and reloads them only if the
+    /// store changed since (in any process) or the filter is a smart list, whose
+    /// rules may depend on the time.
     func prepareForShow() {
         now = Date()
         contactCounts = nil
         resetSearch()
         selectedID = items.first?.id
-        reload()
+        guard let core = app.core else { return }
+        let gen = generation
+        var smart = false
+        if case .list = filter { smart = currentManualList == nil }
+        Task {
+            let version = try? await core.dataVersion()
+            if gen == generation, smart || version == nil || version != loadedVersion { reload(resetSelection: true) }
+        }
     }
 
-    /// Resets the search while hidden, so the next open finds it loaded.
+    /// Resets the search while hidden and lets the WAL drain.
     func didHide() {
         resetSearch()
-        if isStale { reload(resetSelection: true) }
+        if let core = app.core { Task { await core.checkpoint() } }
     }
 
-    /// A clip was stored: refresh the visible page, or prewarm the next open.
+    /// A clip was stored: refresh the visible page; a hidden one waits for the next open.
     func itemStored() {
-        reload(resetSelection: !isVisible)
+        if isVisible { reload() }
     }
 
     func clearSearch() {
@@ -234,18 +243,14 @@ final class PanelModel {
     func loadContactCounts() async -> [ContactFilter: Int] {
         if let contactCounts { return contactCounts }
         var out: [ContactFilter: Int] = [:]
-        if let core = app.core, app.hasContacts {
-            for type in ContactFilter.allCases {
-                out[type] = (try? await core.items(contact: type.rawValue, limit: Self.countCap))?.count ?? 0
-            }
+        if let core = app.core, app.hasContacts, let counts = try? await core.contactCounts() {
+            for (name, n) in counts { if let type = ContactFilter(rawValue: name) { out[type] = n } }
         }
         contactCounts = out
         return out
     }
 
     static func countText(_ n: Int) -> String { n >= countCap ? "\(countCap)+" : "\(n)" }
-
-    private var isStale: Bool { app.core.map { $0.revision.load(ordering: .relaxed) != loadedRevision } ?? false }
 
     private func resetSearch() {
         palette = nil
@@ -269,13 +274,16 @@ final class PanelModel {
         }
     }
 
-    func reload(resetSelection: Bool = false) {
+    /// Typing reloads after a short pause; a newer reload abandons this one at its next step.
+    func reload(resetSelection: Bool = false, debounce: Bool = false) {
         guard let core = app.core else { return }
         generation += 1
         let gen = generation
-        loadedRevision = core.revision.load(ordering: .relaxed)
         let (q, f, token, tokenType, hasKeys) = (query, filter, source, contactToken, app.hasKeysList)
         Task {
+            if debounce { try? await Task.sleep(for: .milliseconds(60)) }
+            guard gen == generation else { return }
+            let version = try? await core.dataVersion()
             let words = q.split(whereSeparator: \.isWhitespace).map(String.init)
             let terms = words.filter { Self.contactType(in: $0) == nil }
             let typed = words.last { Self.contactType(in: $0) != nil }
@@ -283,18 +291,21 @@ final class PanelModel {
             var named: AppSuggestion?
             var suggested: Suggestion?
             if token == nil { named = await Self.namedApp(in: terms, core: core) }
+            guard gen == generation else { return }
             if tokenType == nil, typed == nil, let hit = ContactFilter.named(in: terms),
                let n = await loadContactCounts()[hit.0], n > 0 {
                 suggested = .contact(hit.0, count: n, terms: hit.1)
             }
             if token == nil, named == nil, suggested == nil {
                 for term in terms.prefix(6) where Self.appName(in: term) == nil && term.count >= 2 {
+                    guard gen == generation else { return }
                     if let hit = try? await core.apps(query: term).first {
                         suggested = .app(AppSuggestion(app: hit, term: term))
                         break
                     }
                 }
             }
+            guard gen == generation else { return }
             let text = named == nil && terms.count == words.count ? q
                 : (named.map { n in terms.filter { $0 != n.term } } ?? terms).joined(separator: " ")
             let bundle = token?.bundleId ?? named?.app.bundleId
@@ -314,7 +325,7 @@ final class PanelModel {
                 found = nil
             }
             guard gen == generation else { return }
-            if found == nil { loadedRevision = -1 }
+            loadedVersion = found == nil ? nil : version
             items = found ?? []
             loaded = true
             suggestion = named == nil ? suggested : nil

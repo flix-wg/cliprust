@@ -1,5 +1,6 @@
 //! The capture loop: clipboard change → filters → store.
 
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::Duration;
 
 use clipboard_rs::ClipboardContext;
@@ -95,6 +96,15 @@ impl<F> Handler<F> {
     }
 }
 
+/// The pasteboard change count this process produced last; the watcher skips it.
+static OWN_CHANGE: AtomicIsize = AtomicIsize::new(0);
+
+/// Marks the pasteboard's current contents as written by us, e.g. a clip put
+/// back for pasting, so the watcher does not store it again.
+pub fn own_change(count: isize) {
+    OWN_CHANGE.store(count, Ordering::Relaxed);
+}
+
 /// Watches the clipboard until the process exits, reporting every change.
 pub fn run(
     store: Store,
@@ -125,7 +135,7 @@ fn watch<F: FnMut(Event)>(mut handler: Handler<F>, config: Config) -> Result<()>
         std::thread::park_timeout(delay);
         let state = platform::pasteboard_state();
         // As in clipboard-rs, a zero count is adopted as the baseline silently.
-        if last.0 != 0 && state.0 != last.0 {
+        if last.0 != 0 && state.0 != last.0 && state.0 != OWN_CHANGE.load(Ordering::Relaxed) {
             handler.on_change();
         }
         delay = if state == last {
