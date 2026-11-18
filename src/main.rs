@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use cliprust::monitor::{self, Event};
+use cliprust::query::{self, Search};
 use cliprust::{
     Capture, Contact, Facet, Find, Ingest, ItemSummary, Kind, Rule, SecretFilter, SecretKind,
     SortType, Store, capture, now_ms, secrets,
@@ -47,7 +48,8 @@ enum Cmd {
         #[arg(long, value_parser = parse_contact)]
         contact: Option<ContactFilter>,
     },
-    /// Find items containing every term as a substring
+    /// Find items containing every term as a substring; `from:APP` or `@APP`
+    /// keeps one app's clips, `is:phone|email|address|contact` one contact type
     Search {
         #[arg(required = true)]
         terms: Vec<String>,
@@ -207,7 +209,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> CliResult {
     let path = match cli.db {
         Some(path) => path,
-        None => default_db_path()?,
+        None => cliprust::default_db_path().ok_or("HOME is not set")?,
     };
     let mut store = Store::open(&path)?;
     match cli.cmd {
@@ -253,11 +255,10 @@ fn run(cli: Cli) -> CliResult {
             limit,
             contact,
         } => {
-            let terms = terms.join(" ");
+            let search = Search::resolve(&store, &terms.join(" "), false)?;
             let find = Find {
-                text: Some(&terms),
-                contact,
-                ..Find::default()
+                contact: search.contact.or(contact),
+                ..search.find()
             };
             print_items(&store.find(&find, limit, 0)?);
         }
@@ -482,12 +483,7 @@ type ContactFilter = Option<Contact>;
 
 /// `phone`, `email`, `address`, or `any` for all three.
 fn parse_contact(s: &str) -> Result<ContactFilter, String> {
-    match s {
-        "any" => Ok(None),
-        _ => Contact::parse(s)
-            .map(Some)
-            .ok_or_else(|| "expected phone, email, address or any".to_owned()),
-    }
+    query::contact_named(s).ok_or_else(|| "expected phone, email, address or any".to_owned())
 }
 
 fn secret_line(it: &ItemSummary, with_provider: bool) -> String {
@@ -596,20 +592,4 @@ fn require(found: bool, id: i64) -> CliResult {
     } else {
         Err(format!("no item #{id}").into())
     }
-}
-
-fn home() -> CliResult<PathBuf> {
-    Ok(PathBuf::from(
-        std::env::var_os("HOME").ok_or("HOME is not set")?,
-    ))
-}
-
-fn default_db_path() -> CliResult<PathBuf> {
-    let home = home()?;
-    let base = if cfg!(target_os = "macos") {
-        home.join("Library/Application Support")
-    } else {
-        std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from)
-    };
-    Ok(base.join("cliprust/cliprust.db"))
 }

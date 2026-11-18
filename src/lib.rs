@@ -9,6 +9,7 @@ pub mod import_pastenow;
 pub mod model;
 pub mod monitor;
 pub mod platform;
+pub mod query;
 pub mod rules;
 mod schema;
 pub mod secrets;
@@ -39,6 +40,18 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The database shared by the app and the CLI.
+pub fn default_db_path() -> Option<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support")
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map_or_else(|| home.join(".local/share"), std::path::PathBuf::from)
+    };
+    Some(base.join("cliprust/cliprust.db"))
+}
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
