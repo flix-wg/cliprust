@@ -203,6 +203,8 @@ final class PanelModel {
     /// Resets the search before the panel is drawn. The page in memory is kept unless the store changed
     /// since (in any process), the filter changed, or it is a smart list, whose rules may depend on the
     /// time; then it is reloaded on the spot (a millisecond or two) so the first frame is never stale.
+    /// The main thread waits for the core 30 ms at most: if a capture or a long call holds it, the
+    /// panel shows the page it has and loads the current one right after.
     func prepareForShow() {
         now = Date()
         contactCounts = nil
@@ -212,18 +214,28 @@ final class PanelModel {
         guard let core = app.core else { return }
         var smart = false
         if case .list = filter { smart = currentManualList == nil }
-        let version = try? core.dataVersionNow()
+        let deadline = DispatchTime.now() + .milliseconds(30)
+        guard let versionResult = core.dataVersionSoon(by: deadline) else { return loadAfterShowing() }
+        let version = try? versionResult.get()
         guard smart || filter != shown || version == nil || version != loadedVersion else { return }
-        generation += 1 // drops the reloads the reset queued
         var found: [Item]? = []
         if let scope = Self.scope(filter, hasKeys: app.hasKeysList) {
-            found = try? core.itemsNow(kind: scope.kind, list: scope.list, contact: scope.contact, limit: Self.pageSize)
+            guard let result = core.itemsSoon(kind: scope.kind, list: scope.list, contact: scope.contact,
+                                              limit: Self.pageSize, by: deadline) else { return loadAfterShowing() }
+            found = try? result.get()
         }
+        generation += 1 // drops the reloads the reset queued
         loadedVersion = found == nil ? nil : version
         items = found ?? []
         loaded = true
         suggestion = nil
         selectedID = items.first?.id
+    }
+
+    /// The core was busy: show the page in memory now and replace it once the core answers.
+    private func loadAfterShowing() {
+        loadedVersion = nil
+        reload(resetSelection: true)
     }
 
     /// Resets the search while hidden and lets the WAL drain.

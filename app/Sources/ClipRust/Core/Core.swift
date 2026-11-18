@@ -65,9 +65,23 @@ final class Core: @unchecked Sendable {
         }
     }
 
-    /// Blocks the caller until the core answers; only for the panel's first frame.
-    func callNow<T: Decodable>(_ method: String, _ params: [String: Any] = [:], as type: T.Type = T.self) throws -> T {
-        try queue.sync { try send(method, params) }
+    /// Waits for the core until `deadline` at most; only for the panel's first frame. Returns nil when the
+    /// queue is busy (a capture or a long call): the call still runs, and its result is dropped.
+    func callSoon<T: Decodable>(_ method: String, _ params: [String: Any] = [:], by deadline: DispatchTime,
+                                as type: T.Type = T.self) -> Result<T, Error>? {
+        let done = DispatchSemaphore(value: 0)
+        let box = ResultBox<T>()
+        queue.async {
+            box.result = Result { try self.send(method, params) }
+            done.signal()
+        }
+        guard done.wait(timeout: deadline) == .success else { return nil }
+        return box.result
+    }
+
+    /// Written before the semaphore is signalled and read only after waiting for it.
+    private final class ResultBox<T>: @unchecked Sendable {
+        var result: Result<T, Error>?
     }
 
     func run(_ method: String, _ params: [String: Any] = [:]) async throws {
@@ -128,9 +142,10 @@ extension Core {
         try await call("items", Self.itemsParams(query, kind, list, app, contact, limit))
     }
 
-    /// `items` on the calling thread.
-    func itemsNow(kind: ItemKind? = nil, list: String? = nil, contact: String? = nil, limit: Int) throws -> [Item] {
-        try callNow("items", Self.itemsParams(nil, kind, list, nil, contact, limit))
+    /// `items` on the calling thread, or nil if the core is busy past `deadline`.
+    func itemsSoon(kind: ItemKind? = nil, list: String? = nil, contact: String? = nil, limit: Int,
+                   by deadline: DispatchTime) -> Result<[Item], Error>? {
+        callSoon("items", Self.itemsParams(nil, kind, list, nil, contact, limit), by: deadline)
     }
 
     private static func itemsParams(_ query: String?, _ kind: ItemKind?, _ list: String?, _ app: String?, _ contact: String?,
@@ -171,7 +186,7 @@ extension Core {
     func contactCounts() async throws -> [String: Int] { try await call("counts") }
     /// Differs from an earlier value once any process committed a change.
     func dataVersion() async throws -> [Int] { try await call("data_version") }
-    func dataVersionNow() throws -> [Int] { try callNow("data_version") }
+    func dataVersionSoon(by deadline: DispatchTime) -> Result<[Int], Error>? { callSoon("data_version", by: deadline) }
     /// Folds the WAL back without waiting for other connections.
     func checkpoint() async { try? await run("checkpoint") }
     func lists() async throws -> [ClipList] { try await call("lists") }
