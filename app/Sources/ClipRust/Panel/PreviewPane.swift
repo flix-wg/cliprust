@@ -268,19 +268,17 @@ private struct PreviewFooter: View {
                 row("Size", Format.bytes(item.byteSize))
             }
             .font(.system(size: 11))
-            if Features.notes {
-                TextField("Add a note…", text: $note)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .onSubmit {
-                        let id = item.id, text = note
-                        Task { try? await Thumbnails.shared.core?.setNote(id, text.isEmpty ? nil : text) }
-                    }
-                    .onChange(of: "\(item.id) \(item.note ?? "")", initial: true) { note = item.note ?? "" }
-            }
+            TextField("Add a note…", text: $note)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .onSubmit {
+                    let id = item.id, text = note
+                    Task { try? await Thumbnails.shared.core?.setNote(id, text.isEmpty ? nil : text) }
+                }
+                .onChange(of: "\(item.id) \(item.note ?? "")", initial: true) { note = item.note ?? "" }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)

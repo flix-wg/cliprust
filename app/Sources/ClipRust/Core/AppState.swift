@@ -12,7 +12,6 @@ final class AppState {
     var hasContacts = false
     var excludes: [String] = []
     var stats: Stats?
-    var lastError: String?
     var pinnedLists = Prefs.pinnedLists { didSet { Prefs.pinnedLists = pinnedLists } }
     var listOrder = Prefs.listOrder { didSet { Prefs.listOrder = listOrder } }
 
@@ -35,13 +34,9 @@ final class AppState {
 
     func refresh() async {
         guard let core else { return }
-        do {
-            settings = try await core.settings()
-            lists = try await core.lists()
-            excludes = try await core.excludes()
-        } catch {
-            lastError = error.localizedDescription
-        }
+        settings = (try? await core.settings()) ?? settings
+        lists = (try? await core.lists()) ?? lists
+        excludes = (try? await core.excludes()) ?? excludes
         await refreshRecent()
         await refreshPins()
         await refreshApps()
@@ -103,7 +98,7 @@ final class AppState {
         settings = next
         guard let core else { return }
         Task {
-            do { settings = try await core.saveSettings(next) } catch { lastError = error.localizedDescription }
+            if let saved = try? await core.saveSettings(next) { settings = saved }
         }
     }
 
@@ -111,7 +106,7 @@ final class AppState {
     @discardableResult
     func addToList(_ name: String, _ id: Int64) async -> Bool {
         var added = true
-        do { try await core?.addToList(name, id) } catch { lastError = error.localizedDescription; added = false }
+        do { try await core?.addToList(name, id) } catch { added = false }
         if lists.contains(where: { $0.name == name }) { await refreshPins() } else { await refreshLists() }
         return added
     }
@@ -132,7 +127,6 @@ final class AppState {
             await refreshLists()
             return true
         } catch {
-            lastError = error.localizedDescription
             return false
         }
     }
@@ -146,7 +140,6 @@ final class AppState {
         do {
             try await core?.renameList(name, newName)
         } catch {
-            lastError = error.localizedDescription
             return false
         }
         pinnedLists = pinnedLists.map { $0 == name ? newName : $0 }

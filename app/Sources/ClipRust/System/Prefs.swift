@@ -1,9 +1,5 @@
 import AppKit
 
-enum Features {
-    static let notes = true
-}
-
 enum PanelPosition: String, CaseIterable, Identifiable {
     case center, mouse, menuBar
     var id: String { rawValue }

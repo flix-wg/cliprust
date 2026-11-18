@@ -285,9 +285,7 @@ struct RowMenu: View {
         }
         Divider()
         Button("Rename") { model.perform(.rename, item) }
-        if Features.notes {
-            Button("Edit Note") { model.perform(.note, item) }
-        }
+        Button("Edit Note") { model.perform(.note, item) }
         if item.kind == .file {
             Button("Reveal in Finder") { model.perform(.revealInFinder, item) }
         }

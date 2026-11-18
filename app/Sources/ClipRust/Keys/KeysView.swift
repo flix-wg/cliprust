@@ -100,7 +100,6 @@ struct KeysView: View {
             .customizationID("copied")
             TableColumn("Note", value: \.noteLabel)
                 .customizationID("note")
-                .defaultVisibility(Features.notes ? .automatic : .hidden)
         }
         .contextMenu(forSelectionType: Int64.self) { ids in
             if let item = ids.count == 1 ? model.items.first(where: { $0.id == ids.first }) : nil {
@@ -159,17 +158,15 @@ struct KeyInspector: View {
                     }
                     valueBox(item)
                     details(item)
-                    if Features.notes {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Note").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                            TextField("Add a note…", text: $note, axis: .vertical)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12))
-                                .lineLimit(3...8)
-                                .padding(8)
-                                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                .onSubmit { Task { await model.setNote(item, note) } }
-                        }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Note").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        TextField("Add a note…", text: $note, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .lineLimit(3...8)
+                            .padding(8)
+                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .onSubmit { Task { await model.setNote(item, note) } }
                     }
                     Divider()
                     HStack {

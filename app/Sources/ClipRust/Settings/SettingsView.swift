@@ -70,11 +70,7 @@ struct GeneralPane: View {
     }
 
     private func setLaunchAtLogin(_ on: Bool) {
-        do {
-            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-        } catch {
-            app.lastError = error.localizedDescription
-        }
+        if on { try? SMAppService.mainApp.register() } else { try? SMAppService.mainApp.unregister() }
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 }
@@ -371,6 +367,7 @@ struct ImportPane: View {
                 }
                 LabeledContent("Items", value: app.stats.map { $0.items.formatted() } ?? "—")
                 LabeledContent("Stored", value: app.stats.map { Format.bytes($0.storedBytes + $0.fileBytes) } ?? "—")
+                LabeledContent("Core", value: Core.version)
             }
         }
         .settingsPane()

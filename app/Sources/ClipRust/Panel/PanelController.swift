@@ -327,7 +327,6 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .rename:
             model.beginEdit(.title, item)
         case .note:
-            guard Features.notes else { NSSound.beep(); return }
             model.beginEdit(.note, item)
         case .revealInFinder:
             let urls = (model.detail?.id == item.id ? model.detail! : item).fileURLs
