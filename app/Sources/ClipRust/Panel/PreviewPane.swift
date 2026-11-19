@@ -261,6 +261,19 @@ private struct PreviewFooter: View {
         VStack(alignment: .leading, spacing: 8) {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
                 row("App", item.app.map(AppInfo.name) ?? "Unknown")
+                if let domain = item.domain {
+                    GridRow {
+                        Text("Source").foregroundStyle(.tertiary).gridColumnAlignment(.trailing)
+                        if let url = item.sourceUrl.flatMap(URL.init(string:)) {
+                            Link(domain, destination: url)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(url.absoluteString)
+                        } else {
+                            Text(domain).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
                 row("Copied", Format.date(item.copiedAt))
                 if let formats = item.formats, !formats.isEmpty {
                     row("Formats", Format.formats(formats))

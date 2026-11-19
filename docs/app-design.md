@@ -53,7 +53,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
   - **image:** fitted, with its pixel size
   - **file:** a Quick Look thumbnail and the path
   - **URL:** the URL plus its host
-- **Preview footer:** source app · copied time · times used · formats · size, and an editable note field ("Add a note…").
+- **Preview footer:** source app · source page (the site as a link to the copied page, when the browser or a lookup gave one) · copied time · times used · formats · size, and an editable note field ("Add a note…").
 - **Inline edit:** ⌘N (note) or ⌘R (title) opens a field under the selected row, prefilled and focused. ⏎ saves, Esc cancels, saving it empty removes the note or title. Selecting another row cancels it. Works for keys and IDs, whose note labels them ("prod Cloudflare, DNS edit") and is searchable.
 - **Opening:** the panel keeps the page already in memory unless the core changed since (`data_version`), the filter changed or it is a smart list. Then it reloads the first page synchronously before the panel is drawn (a millisecond or two), so the first frame is current. The search is reset and the page reloaded when it hides, and a stored clip reloads a visible panel in the background.
 - **Empty states:** a single centred line in secondary colour, such as "Nothing copied yet" or "No matches for "foo"".
