@@ -4,8 +4,8 @@ import Observation
 
 /// Panel actions with editable shortcuts. ⏎, Esc, ⇥, the arrows, ⌘1–⌘9 and ⌃1–⌃9 stay fixed.
 enum PanelCommand: String, CaseIterable, Identifiable {
-    case plainPaste, copyOnly, goToList, addToList, saveSearch, pin, note, rename, quickLook, delete, keys, preview,
-         settings, close
+    case plainPaste, copyOnly, goToList, addToList, saveSearch, pin, markKey, note, rename, quickLook, delete, keys,
+         preview, settings, close
 
     var id: String { rawValue }
 
@@ -17,6 +17,7 @@ enum PanelCommand: String, CaseIterable, Identifiable {
         case .addToList: "Add to list"
         case .saveSearch: "Save search as list"
         case .pin: "Pin or unpin"
+        case .markKey: "Mark as key or not a key"
         case .note: "Edit note"
         case .rename: "Rename"
         case .quickLook: "Quick Look"
@@ -36,6 +37,7 @@ enum PanelCommand: String, CaseIterable, Identifiable {
         case .addToList: Shortcut(kVK_ANSI_D, cmdKey, "D")
         case .saveSearch: Shortcut(kVK_ANSI_S, cmdKey | shiftKey, "S")
         case .pin: Shortcut(kVK_ANSI_P, cmdKey | shiftKey, "P")
+        case .markKey: Shortcut(kVK_ANSI_K, cmdKey | shiftKey, "K")
         case .note: Shortcut(kVK_ANSI_N, cmdKey, "N")
         case .rename: Shortcut(kVK_ANSI_R, cmdKey, "R")
         case .quickLook: Shortcut(kVK_Space, 0, "Space")

@@ -5,6 +5,7 @@ struct KeysView: View {
     @Bindable var model: KeysModel
     @State private var showInspector = true
     @State private var columns = TableColumnCustomization<Item>()
+    @State private var unmarking: Item?
     @Environment(\.renderingPreview) private var rendering
 
     var body: some View {
@@ -107,6 +108,9 @@ struct KeysView: View {
                 Button("Copy Masked") { model.copyMasked(item) }
                 Button("Open Source Page") { model.openSource(item) }
                     .disabled(item.sourceUrl == nil)
+                if !item.isID {
+                    Button("Not a Key…") { unmarking = item }
+                }
                 Divider()
             }
             Button("Remove from Keys") { Task { await model.removeFromKeys(ids) } }
@@ -121,6 +125,13 @@ struct KeysView: View {
             return []
         }
         .onDeleteCommand { Task { await model.delete(model.selection) } }
+        .confirmationDialog("Store this key as plain text?", isPresented: Binding(get: { unmarking != nil },
+                                                                                  set: { if !$0 { unmarking = nil } }),
+                            presenting: unmarking) { item in
+            Button("Not a Key", role: .destructive) { Task { await model.unmark(item) } }
+        } message: { _ in
+            Text("It is no longer encrypted or hidden, its text becomes searchable, and ClipRust won’t take it for a key again.")
+        }
         .overlay {
             if model.rows.isEmpty {
                 ContentUnavailableView {

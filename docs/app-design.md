@@ -76,6 +76,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⇥ (with an app suggestion) | make the app the search token |
 | ⌫ (at the start of the search field) | remove the app token |
 | ⌘⇧P | pin or unpin the item |
+| ⇧⌘K | mark as key, or not a key (for a key, after an inline confirmation: ⏎ confirms, Esc cancels) |
 | ⌘L | go to list: palette of every chip, then apps; ⏎ on an app shows its clips, ⏎ on an unknown name creates a manual list and switches to it |
 | ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
 | ⌘⇧S | save search as a smart list (text, app token, `is:` type and the active type or Contacts filter) and switch to it |
@@ -93,7 +94,9 @@ The list palette is a 280 pt glass overlay under the search field: type to filte
 
 Clicking outside the panel closes it.
 
-**Right-click on a row:** Paste · Paste as Plain Text · Copy · Call / New Email / Open in Maps (contacts; the first number or address found, Maps gets the whole clip) · Pin · Add to List ▸ · Rename · Edit Note · Reveal in Finder (files) · Delete.
+**Right-click on a row:** Paste · Paste as Plain Text · Copy · Call / New Email / Open in Maps (contacts; the first number or address found, Maps gets the whole clip) · Pin · Add to List ▸ · Rename · Edit Note · Mark as Key (text) or Not a Key… (keys) · Reveal in Finder (files) · Delete.
+
+**Mark as Key** masks and encrypts a clip that detection missed, such as a password, exactly like a detected key, and later copies of it stay a key. **Not a Key** asks first, then stores the key unencrypted and searchable again, and detection leaves it alone from then on. While the key that encrypts keys is unavailable both are refused and the panel shows why.
 
 ### 3. Keys & IDs window
 
@@ -116,6 +119,7 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
   - Open source page
   - Delete
   - Remove from Keys (to correct a false positive)
+  - Not a Key… (confirm; stores it as plain, searchable text, see the panel)
 
 ### 4. Settings window (tabs, standard `Settings` scene)
 

@@ -15,6 +15,8 @@ final class AppState {
     var encryption: EncryptionStatus?
     /// Why the last key copied was not saved; shown in the panel until dismissed.
     var skippedKey: String?
+    /// Why marking an item as a key, or not a key, failed; shown in the panel until dismissed.
+    var keyError: String?
     var pinnedLists = Prefs.pinnedLists { didSet { Prefs.pinnedLists = pinnedLists } }
     var listOrder = Prefs.listOrder { didSet { Prefs.listOrder = listOrder } }
 
@@ -66,6 +68,25 @@ final class AppState {
         await refreshEncryption()
         await refreshRecent()
         return n
+    }
+
+    /// Marks an item as a key, or not a key; returns the id that remains, or nil after showing why not.
+    func setKey(_ id: Int64, _ on: Bool) async -> Int64? {
+        guard let core else { return nil }
+        do {
+            let kept = on ? try await core.markKey(id) : try await core.unmarkKey(id)
+            keyError = nil
+            await refreshRecent()
+            if on, !hasKeysList { await refreshLists() }
+            return kept
+        } catch let error as CoreError where error.code == "locked" {
+            await refreshEncryption()
+            if encryption?.isLocked != true { keyError = error.message }
+            return nil
+        } catch {
+            keyError = error.localizedDescription
+            return nil
+        }
     }
 
     func refreshApps() async {

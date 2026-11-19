@@ -198,6 +198,10 @@ extension Core {
     func item(_ id: Int64) async throws -> Item { try await call("item", ["id": id]) }
     func pastePrep(_ id: Int64, plain: Bool) async throws { try await run("paste_prep", ["id": id, "plain": plain]) }
     func revealKey(_ id: Int64) async throws -> String? { try await call("reveal_key", ["id": id]) }
+    /// Files an item as a key (masked and encrypted) whatever detection said; returns the id that remains.
+    func markKey(_ id: Int64) async throws -> Int64 { try await call("mark_key", ["id": id]) }
+    /// Stores a key as plain, searchable text that detection leaves alone; returns the id that remains.
+    func unmarkKey(_ id: Int64) async throws -> Int64 { try await call("unmark_key", ["id": id]) }
     func delete(_ id: Int64) async throws { try await run("delete", ["id": id]) }
     func setTitle(_ id: Int64, _ title: String?) async throws {
         try await run("set_title", ["id": id, "title": title.map { $0 as Any } ?? NSNull()])

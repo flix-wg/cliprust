@@ -194,6 +194,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         let key = e.charactersIgnoringModifiers?.lowercased() ?? ""
         let code = Int(e.keyCode)
         if model.editing != nil { return handleEditKey(code, mods) }
+        if let item = model.unmarking {
+            switch (code, mods) {
+            case (kVK_Return, []), (kVK_ANSI_KeypadEnter, []): model.setKey(item, false)
+            case (kVK_Escape, []): model.unmarking = nil
+            default: return false
+            }
+            return true
+        }
         let command = PanelShortcuts.shared.command(for: e)
         if let command, paletteKey(command) { return true }
         if model.palette != nil { return handlePaletteKey(code, mods, key) }
@@ -206,6 +214,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         case .plainPaste: run(.choose(.plain), item)
         case .copyOnly: run(.choose(.copyOnly), item)
         case .pin: run(.togglePin, item)
+        case .markKey: run(.markKey, item)
         case .note: run(.note, item)
         case .rename: run(.rename, item)
         case .quickLook: run(.quickLook, item)
@@ -342,6 +351,14 @@ final class PanelController: NSObject, NSWindowDelegate {
             toggleQuickLook(item)
         case .delete:
             model.delete(item)
+        case .markKey:
+            if item.isSecret, !item.isID {
+                model.unmarking = item
+            } else if item.kind == .text || item.kind == .url {
+                model.setKey(item, true)
+            } else {
+                NSSound.beep()
+            }
         case .openContact(let type):
             Task {
                 let text = (try? await app.core?.item(item.id))?.text ?? item.preview ?? ""

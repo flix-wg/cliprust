@@ -24,6 +24,8 @@ enum PanelAction {
     case choose(ChooseMode)
     case addToList(String), newList, removeFromList(String), togglePin
     case rename, note, revealInFinder, quickLook, delete, openContact(String)
+    /// Mark as Key, or Not a Key for a key (after a confirmation).
+    case markKey
 }
 
 /// The note or title being edited inline under the selected row.
@@ -126,6 +128,8 @@ final class PanelModel {
         }
     }
     var editing: InlineEdit?
+    /// The key waiting for confirmation that it is not a key.
+    var unmarking: Item?
     var detail: Item?
     var loaded = false
     var isVisible = false
@@ -292,6 +296,7 @@ final class PanelModel {
     private func resetSearch() {
         palette = nil
         editing = nil
+        unmarking = nil
         controlHeld = false
         suggestionSelected = false
         let last = Prefs.openOn == .last ? Prefs.lastFilter.flatMap(ItemFilter.init(key:)) : nil
@@ -466,6 +471,18 @@ final class PanelModel {
                 NSSound.beep()
                 if detail?.id == edit.id, before?.id == edit.id { detail = before }
             }
+            reload()
+        }
+    }
+
+    /// Marks `item` as a key, or a key as not a key, and shows the result.
+    func setKey(_ item: Item, _ on: Bool) {
+        unmarking = nil
+        Task {
+            guard let id = await app.setKey(item.id, on) else { return NSSound.beep() }
+            showToast(on ? "Marked as key" : "Not a key", symbol: on ? "key.horizontal" : "key.slash")
+            detail = try? await app.core?.item(id)
+            selectedID = id
             reload()
         }
     }

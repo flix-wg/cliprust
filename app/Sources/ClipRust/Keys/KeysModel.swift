@@ -119,6 +119,12 @@ final class KeysModel {
         await reload()
     }
 
+    /// Stores a key as plain text again; it leaves this window.
+    func unmark(_ item: Item) async {
+        if await app.setKey(item.id, false) == nil { NSSound.beep() }
+        await reload()
+    }
+
     func removeFromKeys(_ ids: Set<Int64>) async {
         for item in items where ids.contains(item.id) {
             try? await app.core?.removeFromList(item.isID ? Item.idsList : Item.keysList, item.id)

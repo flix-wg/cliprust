@@ -16,6 +16,13 @@ struct PanelView: View {
         VStack(spacing: 0) {
             searchBar
             KeyNotices(app: model.app)
+            if let item = model.unmarking {
+                panelNotice("key.slash", "Store “\(item.oneLine)” as plain text?",
+                            "It is no longer encrypted or hidden, its text becomes searchable, and ClipRust won’t take it for a key again. ⏎ confirms, Esc cancels.") {
+                    Button("Cancel") { model.unmarking = nil }
+                    Button("Not a Key", role: .destructive) { model.setKey(item, false) }
+                }
+            }
             FilterBar(model: model)
             Divider()
             GeometryReader { geo in
@@ -110,8 +117,8 @@ private struct KeyNotices: View {
 
     var body: some View {
         if let status = app.encryption, status.isLocked {
-            notice("lock.trianglebadge.exclamationmark", "Saved keys can’t be read",
-                   error ?? "\(status.message ?? "ClipRust’s key is missing from the Keychain"). \(keys(status.unreadable)) stay listed but can’t be pasted, and new keys aren’t saved. Restore the key with your recovery code in Settings › Security, or forget the unreadable keys.") {
+            panelNotice("lock.trianglebadge.exclamationmark", "Saved keys can’t be read",
+                        error ?? "\(status.message ?? "ClipRust’s key is missing from the Keychain"). \(keys(status.unreadable)) stay listed but can’t be pasted, and new keys aren’t saved. Restore the key with your recovery code in Settings › Security, or forget the unreadable keys.") {
                 if confirming {
                     Button("Cancel") { confirming = false }
                     Button("Delete \(keys(status.unreadable))", role: .destructive, action: forget)
@@ -120,9 +127,13 @@ private struct KeyNotices: View {
                 }
             }
         } else if let reason = app.skippedKey {
-            notice("key.slash", "A copied key wasn’t saved",
-                   "It stays on the clipboard but not in your history: \(reason).") {
+            panelNotice("key.slash", "A copied key wasn’t saved",
+                        "It stays on the clipboard but not in your history: \(reason).") {
                 Button("Dismiss") { app.skippedKey = nil }
+            }
+        } else if let reason = app.keyError {
+            panelNotice("key.slash", "The key wasn’t changed", "\(reason).") {
+                Button("Dismiss") { app.keyError = nil }
             }
         }
     }
@@ -135,23 +146,24 @@ private struct KeyNotices: View {
             do { _ = try await app.forgetUnreadableKeys(); error = nil } catch { self.error = error.localizedDescription }
         }
     }
+}
 
-    private func notice(_ symbol: String, _ title: String, _ text: String,
-                        @ViewBuilder actions: () -> some View) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 12, weight: .semibold))
-                Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) { actions() }.controlSize(.small)
-            }
-            Spacer(minLength: 0)
+/// An orange box under the search field, with its actions in a row.
+private func panelNotice(_ symbol: String, _ title: String, _ text: String,
+                         @ViewBuilder actions: () -> some View) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+        Image(systemName: symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(.orange)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) { actions() }.controlSize(.small)
         }
-        .padding(10)
-        .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 8))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        Spacer(minLength: 0)
     }
+    .padding(10)
+    .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 8))
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
 }
 
 struct PanelBackground: View {
@@ -339,6 +351,11 @@ struct RowMenu: View {
         Divider()
         Button("Rename") { model.perform(.rename, item) }
         Button("Edit Note") { model.perform(.note, item) }
+        if item.isSecret, !item.isID {
+            Button("Not a Key…") { model.perform(.markKey, item) }
+        } else if item.kind == .text || item.kind == .url {
+            Button("Mark as Key") { model.perform(.markKey, item) }
+        }
         if item.kind == .file {
             Button("Reveal in Finder") { model.perform(.revealInFinder, item) }
         }
