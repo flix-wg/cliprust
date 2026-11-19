@@ -23,7 +23,7 @@ use super::reps::{insert_reps, load_reps, wipe};
 use super::{OPTIMIZE_FTS, Store, file};
 use crate::crypto::{self, KeyError, KeySource, Subkeys};
 use crate::model::{Rep, format};
-use crate::{Error, Result, schema};
+use crate::{Error, Result, schema, secrets};
 
 pub(super) const MISSING: &str = "ClipRust's key is missing from the Keychain";
 const WRONG_KEY: &str = "the key in the Keychain does not belong to this database";
@@ -539,10 +539,9 @@ impl Store {
             return Ok(Some(value.to_owned()));
         };
         let mut reps = load_reps(&self.conn, &self.keys, id)?;
-        let out = match key_text(&reps) {
-            Some(secret) => value.replace(secret, &masked),
-            None => value.to_owned(),
-        };
+        let out = key_values(&reps)
+            .into_iter()
+            .fold(value.to_owned(), |out, secret| out.replace(secret, &masked));
         wipe(&mut reps);
         Ok(Some(out))
     }
@@ -598,14 +597,9 @@ pub(super) fn seal_item(
         r.get(0)
     })?;
     let mut reps = load_reps(conn, keys, id)?;
-    if let Some(secret) = key_text(&reps)
-        && conn.execute(
-            "UPDATE paste_items SET title = replace(title, ?2, text), note = replace(note, ?2, text) \
-             WHERE id = ?1 AND (instr(title, ?2) > 0 OR instr(note, ?2) > 0)",
-            params![id, secret],
-        )? > 0
-    {
-        conn.execute(OPTIMIZE_FTS, [])?;
+    if let Err(e) = hide_key(conn, id, &reps) {
+        wipe(&mut reps);
+        return Err(e);
     }
     let checksum = sealer
         .1
@@ -667,12 +661,54 @@ pub(super) fn add_or_confirm(
     }
 }
 
-/// The plain-text value of a key item.
-fn key_text(reps: &[Rep]) -> Option<&str> {
-    reps.iter()
-        .find(|r| r.format == format::TEXT)
-        .and_then(|r| std::str::from_utf8(&r.data).ok())
-        .filter(|s| !s.is_empty())
+/// The values of a key item that must not show anywhere else: each text,
+/// HTML or RTF payload, as copied and trimmed, longest first.
+fn key_values(reps: &[Rep]) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for rep in reps
+        .iter()
+        .filter(|r| [format::TEXT, format::HTML, format::RTF].contains(&r.format.as_str()))
+    {
+        if let Ok(s) = std::str::from_utf8(&rep.data) {
+            for v in [s, s.trim()] {
+                if !v.is_empty() && !out.contains(&v) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    out
+}
+
+/// Masks key item `id`'s values in its title and note, and keeps them out
+/// of its source URL and title. Returns whether anything changed.
+pub(super) fn hide_key(conn: &Connection, id: i64, reps: &[Rep]) -> Result<bool> {
+    let values = key_values(reps);
+    let mut labels = 0;
+    for value in &values {
+        labels += conn.execute(
+            "UPDATE paste_items SET title = replace(title, ?2, text), note = replace(note, ?2, text) \
+             WHERE id = ?1 AND (instr(title, ?2) > 0 OR instr(note, ?2) > 0)",
+            params![id, value],
+        )?;
+    }
+    if labels > 0 {
+        conn.execute(OPTIMIZE_FTS, [])?;
+    }
+    let (mut url, mut title): (Option<String>, Option<String>) = conn.query_row(
+        "SELECT source_url, source_title FROM paste_items WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let sources = secrets::hide_in_source(&mut url, &mut title, &values);
+    if sources {
+        conn.execute(
+            "UPDATE paste_items SET source_url = ?2, source_title = ?3 WHERE id = ?1",
+            params![id, url, title],
+        )?;
+    }
+    Ok(labels > 0 || sources)
 }
 
 const SCRUB_PENDING: &str = "scrub_pending";

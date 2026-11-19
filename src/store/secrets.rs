@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, param
 use serde::{Deserialize, Serialize};
 
 use super::items::{INDEXED_TEXT_LIMIT, truncate};
-use super::keys::{mark_scrub, merge_into, seal_item};
+use super::keys::{hide_key, mark_scrub, merge_into, seal_item};
 use super::lists::{IDS_LIST, KEYS_LIST, add_member};
 use super::reps::{insert_reps, load_reps, wipe};
 use super::{OPTIMIZE_FTS, SUMMARY_SQL, Store};
@@ -111,15 +111,16 @@ impl Store {
         }
         let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
         let sealer = keys.sealer(&tx)?;
-        let mut kept = id;
-        if old_kind != Some(SecretKind::Key) {
-            let mut reps = load_reps(&tx, keys, id)?;
+        let mut reps = load_reps(&tx, keys, id)?;
+        let filed = (|| -> Result<bool> {
+            if old_kind == Some(SecretKind::Key) {
+                return hide_key(&tx, id, &reps);
+            }
             let masked = text_of(&reps)
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
-                .map(secrets::mask_marked);
-            wipe(&mut reps);
-            let masked = masked.ok_or_else(|| Error::Refused("the item has no text".into()))?;
+                .map(secrets::mask_marked)
+                .ok_or_else(|| Error::Refused("the item has no text".into()))?;
             let site = domain.as_deref().map(secrets::site_name);
             let secret = Secret {
                 kind: SecretKind::Key,
@@ -138,17 +139,32 @@ impl Store {
                 )?;
             }
             tx.execute(OPTIMIZE_FTS, [])?;
-            if let Some(sealer) = &sealer {
-                kept = seal_item(&tx, keys, id, sealer)?;
-                mark_scrub(&tx)?;
-            }
+            hide_key(&tx, id, &reps)?;
+            Ok(true)
+        })();
+        wipe(&mut reps);
+        // A key the rescan filed still waits in plaintext for `encrypt_pending`.
+        let mut changed = filed?;
+        let mut kept = id;
+        if let Some(sealer) = &sealer
+            && tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM paste_item_data WHERE item_id = ?1 AND key_gen IS NOT ?2)",
+                params![id, sealer.0],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            kept = seal_item(&tx, keys, id, sealer)?;
+            changed = true;
+        }
+        if changed {
+            mark_scrub(&tx)?;
         }
         tx.execute(
             "UPDATE paste_items SET secret_override = 1 WHERE id = ?1",
             [kept],
         )?;
         tx.commit()?;
-        if sealer.is_some() && old_kind != Some(SecretKind::Key) {
+        if changed {
             self.scrub()?;
         }
         Ok(kept)
@@ -286,6 +302,13 @@ impl Store {
                 let domain = cap.source_url.as_deref().and_then(secrets::domain);
                 if apply_secret(&tx, id, None, secret, domain.as_deref(), last_used_at)? {
                     found += 1;
+                }
+                // Detection cut a key out of the page fields.
+                if secret.kind == SecretKind::Key {
+                    tx.execute(
+                        "UPDATE paste_items SET source_url = ?2, source_title = ?3 WHERE id = ?1",
+                        params![id, cap.source_url, cap.source_title],
+                    )?;
                 }
             }
         }
@@ -448,6 +471,37 @@ mod tests {
         assert_eq!(
             s.ingest(&Capture::from_text(password.into()), 3).unwrap(),
             Ingest::Duplicate(id)
+        );
+
+        // An HTML-only clip quoted in its note, a credential in its own page
+        // URL, and a key the rescan filed but left in plaintext.
+        let mut html = Capture::from_text(String::new());
+        html.reps = vec![Rep::new(
+            format::HTML,
+            b"<b>Hq7xZ2mPw9</b> for prod".to_vec(),
+        )];
+        let html = s.ingest(&html, 6).unwrap().id();
+        s.set_note(html, Some("see <b>Hq7xZ2mPw9</b> for prod"))
+            .unwrap();
+        let url = "https://admin:Tk9xQ2mLp7Vz@db.example.com/x";
+        let mut link = Capture::from_text(url.into());
+        link.source_url = Some(url.into());
+        let link = s.ingest(&link, 7).unwrap().id();
+        let filed = add(&mut s, "ghp_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2", None, 8);
+        assert_eq!(s.rescan_keys().unwrap(), 1);
+        assert_eq!(s.encryption_status().unwrap().pending, 1);
+        for id in [html, link, filed] {
+            s.mark_key(id, 9).unwrap();
+        }
+        assert_eq!(s.encryption_status().unwrap().pending, 0);
+        for secret in ["Hq7xZ2mPw9", "Tk9xQ2mLp7Vz", "Cc3Dd4Ee5Ff6"] {
+            assert!(!on_disk(&path, secret), "{secret}");
+            assert!(s.search(secret, 10).unwrap().is_empty(), "{secret}");
+        }
+        let link = s.summary(link).unwrap().unwrap();
+        assert_eq!(
+            (link.source_url.as_deref(), link.source_domain.as_deref()),
+            (Some("https://db.example.com"), Some("example.com"))
         );
 
         let mut key = Capture::from_text(VALUE.into());

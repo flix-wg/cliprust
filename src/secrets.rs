@@ -233,7 +233,6 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
         cap.source_url = Some(page.url);
         cap.source_title = cap.source_title.take().or(page.title);
     }
-    let url_host = cap.source_url.as_deref().and_then(host);
     let site = cap
         .source_url
         .as_deref()
@@ -286,6 +285,11 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
         },
     };
     let hide_all = matches!(provider.as_str(), PASSWORD | APPLE_PASSWORD);
+    if kind == SecretKind::Key {
+        let values: Vec<&str> = ranges.iter().map(|r| &text[r.clone()]).collect();
+        hide_in_source(&mut cap.source_url, &mut cap.source_title, &values);
+    }
+    let url_host = cap.source_url.as_deref().and_then(host);
     let place = url_host
         .or(cap.source_title.as_deref())
         .or(app)
@@ -321,6 +325,35 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
         name,
         masked,
     });
+}
+
+/// Keeps a key's values out of the page fields stored with it: a URL that
+/// holds one is cut to its origin, or dropped if that holds one too, and
+/// such a title is dropped. Returns whether anything changed.
+pub fn hide_in_source(
+    url: &mut Option<String>,
+    title: &mut Option<String>,
+    values: &[&str],
+) -> bool {
+    let holds = |s: &str| values.iter().any(|v| !v.is_empty() && s.contains(v));
+    let mut changed = false;
+    if url.as_deref().is_some_and(holds) {
+        *url = url.as_deref().and_then(origin).filter(|o| !holds(o));
+        changed = true;
+    }
+    if title.as_deref().is_some_and(holds) {
+        *title = None;
+        changed = true;
+    }
+    changed
+}
+
+/// `scheme://host[:port]` of a URL, without user, password, path or query.
+fn origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    (!host.is_empty()).then(|| format!("{scheme}://{host}"))
 }
 
 /// The registrable domain of a URL's host: `dash.cloudflare.com` →

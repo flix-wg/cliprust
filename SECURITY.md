@@ -30,4 +30,6 @@ ClipRust keeps your clipboard history in one SQLite database (`~/Library/Applica
 - Data removed from the database can survive in free disk space, APFS snapshots and Time Machine backups. FileVault protects those; turn it on.
 - Revealed keys pass through Swift strings, which can't be wiped from memory.
 - On Linux there is no Keychain, so the command-line tool stores keys unencrypted, as before.
+- While the Keychain item is locked or unavailable, copying a value you marked as a key again, when detection doesn't recognise it, stores a new plaintext item: its keyed checksum can't be computed to find the marked one.
+- When a key is encrypted or marked, ClipRust rewrites the file to clear the plaintext. If another process holds a read snapshot then, the cleanup stays pending and finishes the next time the database opens, as it does for detected keys.
 - Release builds use the hardened runtime, which blocks casual debugging of the app.
