@@ -90,10 +90,14 @@ struct PanelView: View {
                         Image(systemName: type.symbol).font(.system(size: 11, weight: .medium)).frame(width: 15, height: 15)
                     }
                 }
-                TextField(model.searchPlaceholder, text: $model.query)
+                TextField(model.showsHints ? "" : model.searchPlaceholder, text: $model.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($searchFocused)
+                    .accessibilityLabel(model.searchPlaceholder)
+                    .overlay(alignment: .leading) {
+                        if model.showsHints { SearchHints(running: model.isVisible) }
+                    }
             }
             if model.app.settings.paused {
                 Label("Paused", systemImage: "pause.fill")
@@ -106,6 +110,47 @@ struct PanelView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 48)
+    }
+}
+
+/// The empty search field's placeholder, cycling through what the search understands. It only
+/// ticks while the panel is open and the field is empty: one state change every few seconds.
+private struct SearchHints: View {
+    let running: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var index = 0
+
+    private static let hints = [
+        "Search clipboard",
+        "from:mail  ·  clips from one app",
+        "site:github.com  ·  clips from a website",
+        "is:phone  ·  or is:email, is:address",
+        "Type an app name, like codex",
+    ]
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Text(Self.hints[index])
+                .id(index)
+                .transition(reduceMotion ? .identity : .push(from: .bottom))
+        }
+        .font(.system(size: 15))
+        .foregroundStyle(.tertiary)
+        .lineLimit(1)
+        .clipped()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .task(id: running) {
+            index = 0
+            guard running else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3.5))
+                guard !Task.isCancelled else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.4)) {
+                    index = (index + 1) % Self.hints.count
+                }
+            }
+        }
     }
 }
 

@@ -194,10 +194,12 @@ final class PanelModel {
 
     var hasSearch: Bool { !query.isEmpty || source != nil || contactToken != nil }
 
+    /// The empty field shows the rotating search hints instead of its placeholder.
+    var showsHints: Bool { !hasSearch }
+
     var searchPlaceholder: String {
         let scope = [contactToken?.title, source?.title].compactMap { $0 }
-        return scope.isEmpty ? "Search, or try  from:mail   site:github.com   is:phone"
-                             : "Search \(scope.joined(separator: " from "))"
+        return scope.isEmpty ? "Search clipboard" : "Search \(scope.joined(separator: " from "))"
     }
 
     var emptyMessage: String {
