@@ -35,7 +35,7 @@ npx web-ext sign --source-dir extensions/firefox --channel unlisted \
 ```
 
 - **Unlisted** returns a signed `.xpi` after an automated check, usually within minutes. Attach it to the GitHub release; users install it by opening the file in Firefox. Updates need an `update_url` in the manifest or a manual reinstall.
-- **Listed** (`--channel listed`) publishes it on addons.mozilla.org with automatic updates. Because the content script runs on all sites it may get a manual review. The listing needs a summary, a category (Other), a 128 px icon and a privacy note; the manifest already declares that no data is collected (`data_collection_permissions: none`).
+- **Listed** (`--channel listed`) publishes it on addons.mozilla.org with automatic updates. Because the content script runs on all sites it may get a manual review. The listing needs a summary, a category (Other), a 128 px PNG of `icon.svg` and a privacy note; the manifest already declares that no data is collected (`data_collection_permissions: none`).
 - The source is plain, unbundled JavaScript, so no separate source upload is needed.
 - Bump `version` in `manifest.json` for every upload; AMO rejects a version it has seen.
 - The add-on ID `source@cliprust.app` is fixed once signed; changing it makes a new add-on.

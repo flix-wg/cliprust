@@ -19,6 +19,8 @@ pub struct Find<'a> {
     pub list: Option<&'a PasteList>,
     /// `Some(None)` matches items with any contact.
     pub contact: Option<Option<Contact>>,
+    /// Lowercase domain of the page the item was copied from; see [`crate::query`].
+    pub site: Option<&'a str>,
 }
 
 /// An app with the number of stored items copied from it.
@@ -82,6 +84,17 @@ impl Store {
         }
         if let Some(contact) = f.contact {
             clauses.push(contact_sql(contact, &mut params));
+        }
+        if let Some(site) = f.site {
+            clauses.push(
+                "p.source_domain LIKE ? ESCAPE '\\' OR ? LIKE '%.' || p.source_domain".into(),
+            );
+            let escaped = site
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            params.push(Value::from(format!("{escaped}%")));
+            params.push(Value::from(site.to_owned()));
         }
         if let Some(app) = f.app {
             clauses.push("p.app_id = (SELECT id FROM applications WHERE bundle_id = ?)".into());

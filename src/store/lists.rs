@@ -179,6 +179,7 @@ mod tests {
             app: Some("com.home"),
             list: Some(&links),
             contact: None,
+            site: None,
         };
         assert_eq!(ids(s.find(&home_links, 10, 5_000).unwrap()), [home]);
         let names = |q| -> Vec<String> {

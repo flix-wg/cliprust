@@ -49,7 +49,8 @@ enum Cmd {
         contact: Option<ContactFilter>,
     },
     /// Find items containing every term as a substring; `from:APP` or `@APP`
-    /// keeps one app's clips, `is:phone|email|address|contact` one contact type
+    /// keeps one app's clips, `is:phone|email|address|contact` one contact type,
+    /// `site:DOMAIN` clips copied from that site
     Search {
         #[arg(required = true)]
         terms: Vec<String>,

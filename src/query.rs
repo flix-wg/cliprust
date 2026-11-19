@@ -6,6 +6,9 @@
 //!   first six words are looked at; a word that names no stored app stays text.
 //! - `is:phone`, `is:email`, `is:address`, or `is:contact` for any of them,
 //!   keeps clips recognised as that contact type. The last one wins.
+//! - `site:github` or `source:github.com` keeps clips copied from a web page
+//!   whose domain starts with the word, or whose domain the word is a
+//!   subdomain of (`site:docs.github.com`). The last one wins.
 
 use crate::store::{AppCount, Find, Store};
 use crate::{Contact, Result};
@@ -21,6 +24,8 @@ pub enum Term<'a> {
     App(&'a str),
     /// `None` for `is:contact`.
     Contact(Option<Contact>),
+    /// The domain after `site:` or `source:`.
+    Site(&'a str),
 }
 
 /// Each word with what it means; nothing is looked up.
@@ -29,6 +34,12 @@ pub fn parse(query: &str) -> Vec<(&str, Term<'_>)> {
 }
 
 fn term(word: &str) -> Term<'_> {
+    let lower = word.to_ascii_lowercase();
+    if let Some(prefix) = ["site:", "source:"].iter().find(|p| lower.starts_with(*p))
+        && word.len() > prefix.len()
+    {
+        return Term::Site(&word[prefix.len()..]);
+    }
     let app = match word.get(..5) {
         Some(p) if p.eq_ignore_ascii_case("from:") => Some(&word[5..]),
         _ => word.strip_prefix('@'),
@@ -70,6 +81,10 @@ pub struct Search {
     pub contact: Option<Option<Contact>>,
     /// Every `is:` word; none of them is searched as text.
     pub contact_terms: Vec<String>,
+    /// From the last `site:` word, lowercased.
+    pub site: Option<String>,
+    /// Every `site:` word; none of them is searched as text.
+    pub site_terms: Vec<String>,
 }
 
 impl Search {
@@ -83,6 +98,10 @@ impl Search {
                 Term::Contact(c) => {
                     s.contact = Some(c);
                     s.contact_terms.push(word.to_owned());
+                }
+                Term::Site(site) => {
+                    s.site = Some(site.to_lowercase());
+                    s.site_terms.push(word.to_owned());
                 }
                 _ => words.push((word, term)),
             }
@@ -113,6 +132,7 @@ impl Search {
             text: Some(&self.text),
             app: self.app.as_ref().map(|a| a.bundle_id.as_str()),
             contact: self.contact,
+            site: self.site.as_deref(),
             ..Find::default()
         }
     }
@@ -143,6 +163,10 @@ mod tests {
                     Text("is:fax"),
                 ],
             ),
+            (
+                "site:GitHub SOURCE:x.com site:",
+                &[Site("GitHub"), Site("x.com"), Text("site:")],
+            ),
         ];
         for (query, terms) in cases {
             let parsed: Vec<Term> = parse(query).into_iter().map(|(_, t)| t).collect();
@@ -157,6 +181,17 @@ mod tests {
             path: None,
         });
         store.ingest(&cap, 1).unwrap();
+        let mut page = Capture::from_text("from a page".into());
+        page.source_url = Some("https://docs.github.com/en".into());
+        store.ingest(&page, 2).unwrap();
+        for (query, hits) in [
+            ("site:git", 1),
+            ("source:docs.GitHub.com", 1),
+            ("site:gitlab.com", 0),
+        ] {
+            let s = Search::resolve(&store, query, false).unwrap();
+            assert_eq!(store.find(&s.find(), 10, 0).unwrap().len(), hits, "{query}");
+        }
         let s = Search::resolve(&store, "@nope is:email 79 from:mai is:phone", false).unwrap();
         assert_eq!(
             (s.text.as_str(), s.app_term.as_deref(), s.contact),
