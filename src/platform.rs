@@ -110,6 +110,8 @@ fn osascript(script: &str, timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
+    // Starting osascript counts against the budget too.
+    let deadline = Instant::now() + timeout;
     let mut child = Command::new("/usr/bin/osascript")
         .args(["-e", script])
         .stdin(Stdio::null())
@@ -125,15 +127,18 @@ fn osascript(script: &str, timeout: Duration) -> Option<String> {
             std::io::Read::read_to_string(&mut std::io::Read::take(stdout, 16 * 1024), &mut out);
         out
     });
-    let deadline = Instant::now() + timeout;
     let success = loop {
+        let now = Instant::now();
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if now < deadline => {
+                std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+            }
             _ => {
+                // Reaped off the capture path; the reader ends with the pipe.
                 let _ = child.kill();
-                let _ = child.wait();
-                break false;
+                std::thread::spawn(move || child.wait());
+                return None;
             }
         }
     };
