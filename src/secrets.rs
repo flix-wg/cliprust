@@ -362,7 +362,7 @@ pub fn hide_in_source(
 }
 
 /// `scheme://host[:port]` of a URL, without user, password, path or query.
-fn origin(url: &str) -> Option<String> {
+pub(crate) fn origin(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     let host = authority.rsplit('@').next()?;

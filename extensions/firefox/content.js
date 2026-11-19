@@ -1,5 +1,8 @@
-// Adds the page URL to every copy as `text/x-cliprust-source`. Firefox stores
-// custom types in `org.mozilla.custom-clipdata`, where ClipRust reads it.
+// Adds the page origin (`https://example.com`) to every copy as
+// `text/x-cliprust-source`. Firefox stores custom types in
+// `org.mozilla.custom-clipdata`, where ClipRust reads it. Pages you paste into
+// can read custom types too, so only the origin goes there, never the path or
+// query.
 "use strict";
 
 const SOURCE_TYPE = "text/x-cliprust-source";
@@ -8,7 +11,8 @@ const SOURCE_TYPE = "text/x-cliprust-source";
 // runs as the event bubbles out of the window.
 window.addEventListener("copy", (event) => {
   const data = event.clipboardData;
-  if (!data) return;
+  const origin = location.origin;
+  if (!data || !/^https?:\/\//.test(origin)) return;
   if (!event.defaultPrevented) {
     // Firefox ignores clipboardData unless the event is cancelled, so put the
     // selection there ourselves, the way the default copy would.
@@ -18,7 +22,7 @@ window.addEventListener("copy", (event) => {
     if (copied.html) data.setData("text/html", copied.html);
     event.preventDefault();
   }
-  data.setData(SOURCE_TYPE, location.href);
+  data.setData(SOURCE_TYPE, origin);
 });
 
 function selection() {

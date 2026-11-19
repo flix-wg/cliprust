@@ -177,6 +177,8 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
                 .and_then(|bytes| firefox_custom_data(&bytes, EXTENSION_SOURCE_TYPE))
                 .and_then(clean)
                 .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+                // Any page can set this type, so keep only the origin.
+                .and_then(|url| crate::secrets::origin(&url))
         });
     Ok(cap)
 }

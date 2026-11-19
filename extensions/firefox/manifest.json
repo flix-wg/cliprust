@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ClipRust Source",
   "version": "0.1.0",
-  "description": "Adds the page address to text you copy, so the ClipRust clipboard manager can show where a clip came from.",
+  "description": "Adds the site you copy from to the copied text, so the ClipRust clipboard manager can show where a clip came from.",
   "homepage_url": "https://github.com/flix-wg/cliprust/tree/main/extensions/firefox",
   "browser_specific_settings": {
     "gecko": {

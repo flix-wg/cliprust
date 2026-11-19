@@ -1,15 +1,16 @@
 # ClipRust Source for Firefox
 
-An optional add-on for Firefox and Firefox-based browsers such as Zen. It adds the page address to text you copy, so ClipRust shows where a clip came from and can use the site to recognise keys. Chromium browsers (Chrome, Arc, Edge, Brave) already do this on their own, so they don't need it.
+An optional add-on for Firefox and Firefox-based browsers such as Zen. It adds the site (for example `https://github.com`) to text you copy, so ClipRust shows where a clip came from and can use the site to recognise keys. Chromium browsers (Chrome, Arc, Edge, Brave) already do this on their own, so they don't need it.
 
 ClipRust works the same without it; Firefox clips just have no source.
 
 ## How it works
 
-A content script listens for `copy` on every http(s) page and adds the page URL as `text/x-cliprust-source`. Firefox stores custom clipboard types in `org.mozilla.custom-clipdata`, and ClipRust's capture reads the value from there.
+A content script listens for `copy` on every http(s) page and adds the page origin (scheme, host and port) as `text/x-cliprust-source`. Firefox stores custom clipboard types in `org.mozilla.custom-clipdata`, and ClipRust's capture reads the value from there.
 
 - If the page handles the copy itself, the add-on only adds its type.
 - Otherwise Firefox would ignore any added data, so the add-on writes the selection as plain text and HTML itself and cancels the default copy.
+- Only the origin is added, never the path, query or fragment: Firefox lets any page you paste into read custom clipboard types, so a full URL there could leak tokens or private pages. ClipRust also cuts whatever it reads down to the origin. The Source row links to the site, not the exact page.
 - Password fields are left alone, and copies the page stops from propagating get no source.
 - A page script that listens on `window` and skips its copy logic when the event is already cancelled would lose its own copy; no such page is known yet.
 

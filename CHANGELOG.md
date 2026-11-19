@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Core and CLI
 
-- The page a clip came from is read from Firefox and Zen too, with the optional add-on in `extensions/firefox`.
+- The site a clip came from is read from Firefox and Zen too, with the optional add-on in `extensions/firefox`. It records only the origin, since pages you paste into can read it.
 
 ## [0.1.0] - 2026-11-19
 
