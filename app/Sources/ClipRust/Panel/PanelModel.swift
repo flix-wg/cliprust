@@ -196,7 +196,8 @@ final class PanelModel {
 
     var searchPlaceholder: String {
         let scope = [contactToken?.title, source?.title].compactMap { $0 }
-        return scope.isEmpty ? "Search clipboard" : "Search \(scope.joined(separator: " from "))"
+        return scope.isEmpty ? "Search, or try  from:mail   site:github.com   is:phone"
+                             : "Search \(scope.joined(separator: " from "))"
     }
 
     var emptyMessage: String {

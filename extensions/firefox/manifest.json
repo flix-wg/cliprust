@@ -4,17 +4,30 @@
   "version": "0.1.0",
   "description": "Adds the site you copy from to the copied text, so the ClipRust clipboard manager can show where a clip came from.",
   "homepage_url": "https://github.com/flix-wg/cliprust/tree/main/extensions/firefox",
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "source@cliprust.app",
       "strict_min_version": "128.0",
-      "data_collection_permissions": { "required": ["none"] }
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
     }
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "all_frames": true,
       "run_at": "document_start"
     }

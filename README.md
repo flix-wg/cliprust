@@ -13,6 +13,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 - **Search everything.** Full-text search over all history, not only previews.
 - **Search by app.** Type `mail` or `codex` to filter by the app you copied from, or use `from:mail`.
+- **Search by site.** `site:github` (or `source:github.com`) keeps clips copied from that website.
 - **Phone numbers, emails, addresses.** Recognised in short clips; type `phone`, `email` or `address` (or `is:phone`), or use the Contacts chip, then call, mail or map them from the row menu.
 
 ### Organise
