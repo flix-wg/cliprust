@@ -268,7 +268,7 @@ private struct PreviewFooter: View {
                 row("Size", Format.bytes(item.byteSize))
             }
             .font(.system(size: 11))
-            TextField("Add a note…", text: $note)
+            TextField("Add a note…  \(PanelShortcuts.shared[.note].display)", text: $note)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .padding(.horizontal, 8)
