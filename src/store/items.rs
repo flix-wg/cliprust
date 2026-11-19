@@ -2,7 +2,7 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, types::Value};
 
-use super::keys::{needs_seal, seal_item};
+use super::keys::{hide_key, key_values, mark_scrub, needs_seal, seal_item};
 use super::reps::{insert_reps, load_reps, wipe};
 use super::secrets::{apply_secret, file_secret};
 use super::{OPTIMIZE_FTS, SUMMARY_SQL, Store};
@@ -100,12 +100,19 @@ impl Store {
             )
             .optional()?;
         let outcome = if let Some((id, last_used_at, old_kind)) = existing {
+            let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
+            let key_item = is_key || sealer.is_some() || old_kind == Some(SecretKind::Key);
+            // A key's value never reaches the page fields, not even for a moment.
+            let (mut url, mut title) = (cap.source_url.clone(), cap.source_title.clone());
+            if key_item {
+                secrets::hide_in_source(&mut url, &mut title, &key_values(&cap.reps));
+            }
             if now >= last_used_at {
                 tx.execute(
                     "UPDATE paste_items SET last_used_at = ?1, app_id = coalesce(?2, app_id), \
                      source_url = coalesce(?3, source_url), source_title = coalesce(?4, source_title), \
                      source_domain = coalesce(?5, source_domain), byte_size = ?6 WHERE id = ?7",
-                    params![now, app_id, cap.source_url, cap.source_title, domain, byte_size, id],
+                    params![now, app_id, url, title, domain, byte_size, id],
                 )?;
                 // Most re-copies bring the same formats; rewriting them costs pages of WAL.
                 let mut old = load_reps(&tx, keys, id)?;
@@ -115,11 +122,14 @@ impl Store {
                 }
                 wipe(&mut old);
             }
-            let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
             if let Some(secret) = secret
                 && apply_secret(&tx, id, old_kind, secret, domain.as_deref(), now)?
             {
                 tx.execute(OPTIMIZE_FTS, [])?;
+            }
+            // Fields an earlier copy stored before the item was known as a key.
+            if key_item && hide_key(&tx, id, &cap.reps)? {
+                mark_scrub(&tx)?;
             }
             let id = match &sealer {
                 Some(s) if needs_seal(&tx, id, checksum, s.0)? => seal_item(&tx, keys, id, s)?,

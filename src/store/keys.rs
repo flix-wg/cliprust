@@ -334,7 +334,8 @@ impl Store {
             }
         }
         tx.commit()?;
-        if had_plain {
+        // Sealing may also have cut a key out of older titles, notes and page fields.
+        if had_plain || setting(&self.conn, SCRUB_PENDING)?.is_some() {
             self.scrub()?;
         } else {
             let _ = schema::checkpoint(&self.conn);
@@ -597,7 +598,12 @@ pub(super) fn seal_item(
         r.get(0)
     })?;
     let mut reps = load_reps(conn, keys, id)?;
-    if let Err(e) = hide_key(conn, id, &reps) {
+    // Replaced metadata may linger in free pages and the WAL until a scrub.
+    let hidden = hide_key(conn, id, &reps).and_then(|changed| match changed {
+        true => mark_scrub(conn),
+        false => Ok(()),
+    });
+    if let Err(e) = hidden {
         wipe(&mut reps);
         return Err(e);
     }
@@ -662,15 +668,24 @@ pub(super) fn add_or_confirm(
 }
 
 /// The values of a key item that must not show anywhere else: each text,
-/// HTML or RTF payload, as copied and trimmed, longest first.
-fn key_values(reps: &[Rep]) -> Vec<&str> {
+/// HTML or RTF payload, as copied and trimmed, and the keys detection finds
+/// in the text (`ghp_…` in `TOKEN=ghp_…`), longest first.
+pub(super) fn key_values(reps: &[Rep]) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for rep in reps
         .iter()
         .filter(|r| [format::TEXT, format::HTML, format::RTF].contains(&r.format.as_str()))
     {
         if let Ok(s) = std::str::from_utf8(&rep.data) {
-            for v in [s, s.trim()] {
+            let spans = if rep.format == format::TEXT {
+                secrets::key_spans(s)
+            } else {
+                Vec::new()
+            };
+            for v in [s, s.trim()]
+                .into_iter()
+                .chain(spans.into_iter().map(|r| &s[r]))
+            {
                 if !v.is_empty() && !out.contains(&v) {
                     out.push(v);
                 }

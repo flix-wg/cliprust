@@ -487,13 +487,23 @@ mod tests {
         let mut link = Capture::from_text(url.into());
         link.source_url = Some(url.into());
         let link = s.ingest(&link, 7).unwrap().id();
-        let filed = add(&mut s, "ghp_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2", None, 8);
+        let filed = add(
+            &mut s,
+            "TOKEN=ghp_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2",
+            None,
+            8,
+        );
+        let quote = "rotate ghp_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2 soon";
+        s.set_note(filed, Some(quote)).unwrap();
         assert_eq!(s.rescan_keys().unwrap(), 1);
         assert_eq!(s.encryption_status().unwrap().pending, 1);
         for id in [html, link, filed] {
             s.mark_key(id, 9).unwrap();
         }
         assert_eq!(s.encryption_status().unwrap().pending, 0);
+        let mut again = Capture::from_text(url.into());
+        again.source_url = Some(url.into());
+        assert_eq!(s.ingest(&again, 10).unwrap(), Ingest::Duplicate(link));
         for secret in ["Hq7xZ2mPw9", "Tk9xQ2mLp7Vz", "Cc3Dd4Ee5Ff6"] {
             assert!(!on_disk(&path, secret), "{secret}");
             assert!(s.search(secret, 10).unwrap().is_empty(), "{secret}");

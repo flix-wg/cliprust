@@ -207,6 +207,19 @@ pub fn detect(text: &str) -> Option<Detection> {
     })
 }
 
+/// The spans detection takes for key values in `text`: known keys and
+/// random tokens, else a password or an identifier.
+pub fn key_spans(text: &str) -> Vec<Range<usize>> {
+    if let Some(found) = detect(text) {
+        return found.ranges;
+    }
+    password_span(text)
+        .map(|(range, ..)| range)
+        .or_else(|| id_span(text))
+        .into_iter()
+        .collect()
+}
+
 /// Marks `cap` as a secret when its text holds a key, or as an ID when it is
 /// a single identifier copied from a known page. `page` is only called once
 /// something looks like a key or ID, because asking a browser is slow.
