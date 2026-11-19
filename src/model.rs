@@ -229,6 +229,8 @@ pub struct Settings {
     pub paused: bool,
     /// Recognise API keys and tokens and file them in the Keys list.
     pub detect_keys: bool,
+    /// Ask Safari for its current tab when a copy there brings no source URL.
+    pub safari_pages: bool,
     /// Retention limits. Items in manual lists (including Keys) are kept.
     pub max_items: Option<u32>,
     pub max_age_days: Option<u32>,
@@ -239,6 +241,7 @@ impl Default for Settings {
         Self {
             paused: false,
             detect_keys: true,
+            safari_pages: false,
             max_items: Some(5000),
             max_age_days: None,
         }

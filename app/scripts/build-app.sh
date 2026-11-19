@@ -62,7 +62,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSAppleEventsUsageDescription</key><string>ClipRust reads the address of the current browser page when you copy an API key, so you can tell keys apart later.</string>
+    <key>NSAppleEventsUsageDescription</key><string>ClipRust reads the address of the current browser page when you copy an API key, and of Safari's current tab for every copy there if you turn that on, so you can tell later where a clip came from.</string>
     <key>NSHumanReadableCopyright</key><string>MIT License</string>
 </dict>
 </plist>

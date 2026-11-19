@@ -225,6 +225,12 @@ enum SettingsCmd {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Ask Safari for its current tab when you copy there (macOS asks for
+    /// Automation permission once)
+    SafariPages {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Keep at most N unlisted items ("off" for no limit)
     MaxItems { value: String },
     /// Delete unlisted items unused for N days ("off" for no limit)
@@ -489,6 +495,7 @@ fn run(cli: Cli) -> CliResult {
             match change {
                 None => {}
                 Some(SettingsCmd::DetectKeys { state }) => settings.detect_keys = state == "on",
+                Some(SettingsCmd::SafariPages { state }) => settings.safari_pages = state == "on",
                 Some(SettingsCmd::MaxItems { value }) => settings.max_items = limit_value(&value)?,
                 Some(SettingsCmd::MaxAgeDays { value }) => {
                     settings.max_age_days = limit_value(&value)?

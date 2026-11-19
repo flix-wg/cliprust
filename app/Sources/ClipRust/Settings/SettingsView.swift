@@ -230,6 +230,7 @@ struct HistoryPane: View {
     let app: AppState
     @State private var confirmClear = false
     @State private var cleared: Int?
+    @State private var safari = SafariAccess.unknown
 
     private static let keepOptions = [500, 1000, 5000, 10000]
     private static let ageOptions = [7, 30, 90, 365]
@@ -248,6 +249,20 @@ struct HistoryPane: View {
                 Toggle("Pause recording", isOn: binding(\.paused))
             } footer: {
                 Caption("Items in lists are always kept.")
+            }
+            Section {
+                Toggle(isOn: Binding(get: { app.settings.safariPages }, set: setSafariPages)) {
+                    Text("Remember the page for copies from Safari")
+                    Text("ClipRust asks Safari for the address of its current tab when you copy there, also in private windows. macOS asks once for permission.")
+                }
+                if app.settings.safariPages, safari == .denied {
+                    LabeledContent {
+                        Button("Allow…", action: SafariAccess.openSettings)
+                    } label: {
+                        Text("Safari access is off")
+                        Text("Allow ClipRust to control Safari in Privacy & Security › Automation.")
+                    }
+                }
             }
             Section("Ignored Apps") {
                 if app.excludes.isEmpty {
@@ -284,6 +299,10 @@ struct HistoryPane: View {
             }
         }
         .settingsPane()
+        .task { safari = await SafariAccess.check(ask: false) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { safari = await SafariAccess.check(ask: false) }
+        }
         .confirmationDialog("Clear the clipboard history?", isPresented: $confirmClear) {
             Button("Clear History", role: .destructive) {
                 Task { cleared = await app.clearHistory() }
@@ -291,6 +310,12 @@ struct HistoryPane: View {
         } message: {
             Text("Items in lists, including Keys, are kept. This can’t be undone.")
         }
+    }
+
+    /// Turning it on asks for permission right away, not at the next copy.
+    private func setSafariPages(_ on: Bool) {
+        app.update { $0.safariPages = on }
+        if on { Task { safari = await SafariAccess.check(ask: true) } }
     }
 
     private func binding<T>(_ path: WritableKeyPath<CoreSettings, T>) -> Binding<T> {

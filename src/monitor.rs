@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clipboard_rs::ClipboardContext;
 
@@ -61,11 +61,22 @@ impl Default for Config {
     }
 }
 
+/// How long asking Safari for its tab may hold up a capture; osascript
+/// itself takes much of it.
+const SAFARI_TIMEOUT: Duration = Duration::from_millis(400);
+/// After a failed Safari lookup (denied, timed out) copies are stored
+/// without one for this long, so a burst of copies does not ask each time.
+const SAFARI_BACKOFF: Duration = Duration::from_secs(30);
+/// Asking a browser for the page behind a key may wait for its permission prompt.
+const KEY_PAGE_TIMEOUT: Duration = Duration::from_secs(2);
+
 struct Handler<S, F> {
     store: S,
     ctx: ClipboardContext,
     max_item_bytes: usize,
     on_event: F,
+    /// No Safari lookups before this, after one failed.
+    safari_retry: Option<Instant>,
 }
 
 impl<S: StoreAccess, F: FnMut(Event)> Handler<S, F> {
@@ -104,9 +115,31 @@ impl<S: StoreAccess, F> Handler<S, F> {
             Err(skipped) => return Ok(Event::Skipped(skipped)),
         };
         cap.app = app;
+        let bundle_id = cap.app.as_ref().map(|a| a.bundle_id.clone());
+        let mut asked = false;
+        if let Some(safari) = bundle_id
+            .as_deref()
+            .filter(|b| platform::SAFARI.contains(b))
+            && settings.safari_pages
+            && cap.source_url.is_none()
+            && self.safari_retry.is_none_or(|at| Instant::now() >= at)
+        {
+            asked = true;
+            match platform::browser_page(safari, SAFARI_TIMEOUT) {
+                Some(page) => {
+                    cap.source_url = Some(page.url);
+                    cap.source_title = page.title;
+                    self.safari_retry = None;
+                }
+                None => self.safari_retry = Some(Instant::now() + SAFARI_BACKOFF),
+            }
+        }
         if settings.detect_keys {
-            let bundle_id = cap.app.as_ref().map(|a| a.bundle_id.clone());
-            secrets::annotate(&mut cap, || platform::browser_page(bundle_id.as_deref()?));
+            secrets::annotate(&mut cap, || {
+                (!asked)
+                    .then(|| platform::browser_page(bundle_id.as_deref()?, KEY_PAGE_TIMEOUT))
+                    .flatten()
+            });
         }
         let now = crate::now_ms();
         let stored = self.store.with(|s| {
@@ -154,6 +187,7 @@ pub fn run(
         ctx: ClipboardContext::new().map_err(clip_err)?,
         max_item_bytes: config.max_item_bytes,
         on_event,
+        safari_retry: None,
     };
     watch(handler, config)
 }

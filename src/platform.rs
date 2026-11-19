@@ -1,8 +1,12 @@
 //! macOS integration. Other platforms get inert fallbacks so the core builds
 //! and tests anywhere.
 
+use std::time::Duration;
+
 use crate::model::AppInfo;
 use crate::secrets::PageContext;
+
+pub const SAFARI: &[&str] = &["com.apple.Safari", "com.apple.SafariTechnologyPreview"];
 
 #[cfg(target_os = "macos")]
 pub fn frontmost_app() -> Option<AppInfo> {
@@ -61,9 +65,10 @@ pub fn run_main_loop() -> ! {
     }
 }
 
-/// URL and title of the front tab, for browsers that answer AppleScript.
-/// macOS asks the user once per browser before allowing this.
-pub fn browser_page(bundle_id: &str) -> Option<PageContext> {
+/// URL and title of the front tab, for browsers that answer AppleScript,
+/// or `None` after `timeout`. macOS asks the user once per browser before
+/// allowing this.
+pub fn browser_page(bundle_id: &str, timeout: Duration) -> Option<PageContext> {
     const CHROMIUM: &[&str] = &[
         "com.google.Chrome",
         "com.google.Chrome.canary",
@@ -73,8 +78,6 @@ pub fn browser_page(bundle_id: &str) -> Option<PageContext> {
         "com.vivaldi.Vivaldi",
         "com.operasoftware.Opera",
     ];
-    const SAFARI: &[&str] = &["com.apple.Safari", "com.apple.SafariTechnologyPreview"];
-
     let tab = if CHROMIUM.contains(&bundle_id) {
         "{URL, title} of active tab of front window"
     } else if SAFARI.contains(&bundle_id) {
@@ -85,7 +88,7 @@ pub fn browser_page(bundle_id: &str) -> Option<PageContext> {
     let script = format!(
         "tell application id \"{bundle_id}\" to set p to {tab}\nreturn (item 1 of p) & linefeed & (item 2 of p)"
     );
-    let out = osascript(&script)?;
+    let out = osascript(&script, timeout)?;
     let (url, title) = out.split_once('\n').unwrap_or((&out, ""));
     let url = url.trim();
     (!url.is_empty()).then(|| PageContext {
@@ -98,9 +101,9 @@ pub fn browser_page(bundle_id: &str) -> Option<PageContext> {
 
 /// Runs osascript with a short deadline: a pending permission prompt or a
 /// hung browser must not stall clipboard capture.
-fn osascript(script: &str) -> Option<String> {
+fn osascript(script: &str, timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let mut child = Command::new("/usr/bin/osascript")
         .args(["-e", script])
@@ -117,7 +120,7 @@ fn osascript(script: &str) -> Option<String> {
             std::io::Read::read_to_string(&mut std::io::Read::take(stdout, 16 * 1024), &mut out);
         out
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + timeout;
     let success = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),

@@ -137,6 +137,8 @@ struct ClipList: Codable, Identifiable, Hashable, Sendable {
 struct CoreSettings: Codable, Equatable, Sendable {
     var paused = false
     var detectKeys = true
+    /// Ask Safari for its current tab when a copy there brings no source URL.
+    var safariPages = false
     var maxItems: Int? = 5000
     var maxAgeDays: Int?
 
@@ -144,6 +146,7 @@ struct CoreSettings: Codable, Equatable, Sendable {
         [
             "paused": paused,
             "detect_keys": detectKeys,
+            "safari_pages": safariPages,
             "max_items": maxItems.map { $0 as Any } ?? NSNull(),
             "max_age_days": maxAgeDays.map { $0 as Any } ?? NSNull(),
         ]
