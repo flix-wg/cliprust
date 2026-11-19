@@ -14,6 +14,7 @@ mod types {
     pub const HTML_TYPE: &str = "public.html";
     pub const IMAGE_TYPES: &[&str] = &["public.png", "public.tiff", "public.jpeg"];
     pub const SOURCE_URL_TYPES: &[&str] = &["org.chromium.source-url"];
+    pub const FIREFOX_CUSTOM_TYPE: &str = "org.mozilla.custom-clipdata";
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -23,11 +24,15 @@ mod types {
     pub const HTML_TYPE: &str = "text/html";
     pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg"];
     pub const SOURCE_URL_TYPES: &[&str] = &["chromium/x-source-url"];
+    pub const FIREFOX_CUSTOM_TYPE: &str = "application/x-moz-custom-clipdata";
 }
 
 pub use types::{FILE_TYPE, IMAGE_TYPES, TEXT_TYPE};
 
 const MAX_SOURCE_URL_BYTES: usize = 8 * 1024;
+/// Set by the optional Firefox extension in `extensions/firefox`.
+const EXTENSION_SOURCE_TYPE: &str = "text/x-cliprust-source";
+const MAX_FIREFOX_CUSTOM_BYTES: usize = 256 * 1024;
 
 /// Markers from nspasteboard.org that password managers and other apps set
 /// on content that must not be recorded.
@@ -152,15 +157,57 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
     if size > max_bytes {
         return Err(Skipped::TooLarge(size));
     }
+    let buffer = |ty: &str, max: usize| {
+        has(ty)
+            .then(|| ctx.get_buffer(ty).ok())
+            .flatten()
+            .filter(|bytes| bytes.len() <= max)
+    };
     cap.source_url = types::SOURCE_URL_TYPES
         .iter()
-        .filter(|ty| has(ty))
-        .find_map(|ty| ctx.get_buffer(ty).ok())
-        .filter(|bytes| bytes.len() <= MAX_SOURCE_URL_BYTES)
+        .find_map(|ty| buffer(ty, MAX_SOURCE_URL_BYTES))
         .and_then(|bytes| String::from_utf8(bytes).ok())
+        .or_else(|| {
+            buffer(types::FIREFOX_CUSTOM_TYPE, MAX_FIREFOX_CUSTOM_BYTES)
+                .and_then(|bytes| firefox_custom_data(&bytes, EXTENSION_SOURCE_TYPE))
+                .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+        })
         .map(|url| url.trim_end_matches('\0').trim().to_owned())
-        .filter(|url| !url.is_empty());
+        .filter(|url| !url.is_empty() && url.len() <= MAX_SOURCE_URL_BYTES);
     Ok(cap)
+}
+
+/// Finds `mime` in the data Firefox writes for custom types set through
+/// `clipboardData.setData`: records of a big-endian u32 kind (1 = string,
+/// 0 = end), then the type and the value, each a big-endian u32 byte length
+/// followed by UTF-16LE text.
+fn firefox_custom_data(mut data: &[u8], mime: &str) -> Option<String> {
+    fn take<'a>(data: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+        let (head, rest) = data.split_at_checked(n)?;
+        *data = rest;
+        Some(head)
+    }
+    fn u32_be(data: &mut &[u8]) -> Option<usize> {
+        Some(u32::from_be_bytes(take(data, 4)?.try_into().ok()?) as usize)
+    }
+    fn string(data: &mut &[u8]) -> Option<String> {
+        let len = u32_be(data)?;
+        let units: Vec<u16> = take(data, len)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        String::from_utf16(&units).ok()
+    }
+    while u32_be(&mut data)? == 1 {
+        let ty = string(&mut data)?;
+        let value = string(&mut data)?;
+        if ty == mime {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Puts an item back on the clipboard. `plain_text` writes only the text.
@@ -199,4 +246,31 @@ pub fn write(ctx: &impl Clipboard, reps: &[Rep], plain_text: bool) -> Result<()>
     }
     ctx.set(contents)
         .map_err(|e| Error::Clipboard(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_custom_type_from_firefox_clipdata() {
+        // What Zen wrote for a copy with the extension in `extensions/firefox`.
+        let hex = "000000010000002c74006500780074002f0078002d0063006c006900700072007500730074002d00\
+                   73006f0075007200630065000000005268007400740070003a002f002f003100320037002e003000\
+                   2e0030002e0031003a0038003700360035002f0069006e006400650078002e00680074006d006c00\
+                   3f0071003d0031002300660072006100670000000000";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(
+            firefox_custom_data(&bytes, EXTENSION_SOURCE_TYPE).as_deref(),
+            Some("http://127.0.0.1:8765/index.html?q=1#frag")
+        );
+        assert_eq!(firefox_custom_data(&bytes, "text/x-other"), None);
+        assert_eq!(
+            firefox_custom_data(&bytes[..40], EXTENSION_SOURCE_TYPE),
+            None
+        );
+    }
 }
