@@ -6,6 +6,7 @@ ClipRust stays small: the default app has no network access, no background helpe
 - **Separate binaries.** Each add-on is its own executable (`cliprust-mcp`, `cliprust-ocr`, …) in the same Cargo workspace, built behind a cargo feature and shipped as a separate release asset and Homebrew formula.
 - **Same database.** An add-on reads the shared database through the core library, the same way the CLI does. The app never links it.
 - **Opt-in.** Settings → Add-ons lists the ones installed (found on `PATH` or in `~/Library/Application Support/cliprust/addons`) with a toggle each. Turning one off stops its process.
+- **Browser add-ons** live in `extensions/` and ship through the browser's store, not with the app. The Firefox one ([extensions/firefox](../extensions/firefox)) adds the page address to copies, so clips from Firefox and Zen get a source like Chromium ones do.
 - **Swift-only features** (for example Vision OCR) live in a lazily loaded bundle or helper. They do nothing until enabled.
 
 ## Planned

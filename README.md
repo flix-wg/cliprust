@@ -24,7 +24,7 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 - **Keys stay hidden.** API keys, tokens and generated passwords are recognised, encrypted on disk with a key kept in your login Keychain, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them. The whole history can be encrypted too; see [SECURITY.md](SECURITY.md) for what this protects against.
 - **Mark as Key.** Hide a clip detection missed with ⌘⇧K or the row menu, or turn a false positive back into searchable text. Later copies keep your choice.
-- **Where it came from.** The preview shows the page a clip was copied from as a link. Chromium browsers say so themselves; for Safari, turn on Settings → History → Remember the page for copies from Safari.
+- **Where it came from.** The preview shows the page a clip was copied from as a link. Chromium browsers say so themselves; for Safari, turn on Settings → History → Remember the page for copies from Safari; Firefox and Zen need the optional [ClipRust Source add-on](extensions/firefox).
 - **Respects privacy.** Skips content that password managers mark as concealed, and any apps you exclude.
 - **Every format.** Plain text, RTF, HTML, images and files, deduplicated and compressed with zstd.
 - **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.
@@ -137,6 +137,7 @@ The open shortcut and every panel shortcut except ⏎, Esc, ⇥, the arrows, ⌘
 src/        Rust core: capture, SQLite store, search, rules, key detection, C API
 app/        SwiftUI app (Swift package) and build script
 docs/       Design notes and roadmap
+extensions/ Optional browser add-ons
 ```
 
 ## More
