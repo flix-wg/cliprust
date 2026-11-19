@@ -13,6 +13,9 @@ First public release.
 - Manual lists, saved searches, pinned items and ordered lists.
 - Retention rules that keep listed and pinned items when history is cleared.
 - Detection of API keys, tokens and IDs, with provider and site facets, notes and masking. Stored clips are rescanned when detection rules change.
+- Detection of generated passwords and Apple app-specific passwords, masked completely; ones without symbols count only on a sign-in page.
+- Mark any text clip as a key, or a key as not a key (`cliprust keys mark` / `unmark`); later copies and rescans keep the choice.
+- Optional lookup of Safari's current tab for copies made there (`cliprust settings safari-pages on`), before key detection runs.
 - Detection of phone numbers, email addresses and postal addresses, searchable by type.
 - Skips content that password managers mark as concealed, and excluded apps.
 - Idle clipboard polling backs off; the WAL is checkpointed.
@@ -26,8 +29,10 @@ First public release.
 - Keyboard-first panel: filter chips, ⌃1–9 jumps, list palette (⌘L), add to list (⌘D), save search (⌘⇧S), pin, inline notes (⌘N) and rename (⌘R).
 - Paste, paste as plain text or copy only; keys paste as concealed text and plain paste of keys is refused.
 - Keys & IDs window; keys are revealed only after Touch ID.
+- Mark as Key and Not a Key in the row menu and with ⌘⇧K; Not a Key in the Keys window too.
+- The preview footer shows the source page as a link.
 - Preview pane with Quick Look and images capped at 800 px.
-- Settings for retention, exclusions, key detection, launch at login and every panel shortcut.
+- Settings for retention, exclusions, key detection, the Safari page lookup, launch at login and every panel shortcut.
 
 ### Security
 

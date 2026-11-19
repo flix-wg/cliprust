@@ -22,7 +22,9 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 ### Capture and privacy
 
-- **Keys stay hidden.** API keys and tokens are recognised, encrypted on disk with a key kept in your login Keychain, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them. The whole history can be encrypted too; see [SECURITY.md](SECURITY.md) for what this protects against.
+- **Keys stay hidden.** API keys, tokens and generated passwords are recognised, encrypted on disk with a key kept in your login Keychain, masked everywhere, and revealed only after Touch ID. Copied keys are marked so other clipboard managers skip them. The whole history can be encrypted too; see [SECURITY.md](SECURITY.md) for what this protects against.
+- **Mark as Key.** Hide a clip detection missed with ⌘⇧K or the row menu, or turn a false positive back into searchable text. Later copies keep your choice.
+- **Where it came from.** The preview shows the page a clip was copied from as a link. Chromium browsers say so themselves; for Safari, turn on Settings → History → Remember the page for copies from Safari.
 - **Respects privacy.** Skips content that password managers mark as concealed, and any apps you exclude.
 - **Every format.** Plain text, RTF, HTML, images and files, deduplicated and compressed with zstd.
 - **Lightweight.** About 17 MB of memory at idle, no helper process, no telemetry, no network access.
@@ -69,6 +71,7 @@ cargo install --git https://github.com/flix-wg/cliprust
 cliprust search invoice 2024
 cliprust copy 42 --plain
 cliprust keys --provider cloudflare
+cliprust keys mark 42
 cliprust import-pastenow
 ```
 
@@ -80,7 +83,7 @@ History lives in `~/Library/Application Support/cliprust/cliprust.db`; the CLI r
 
 Detected API keys are stored encrypted with a key kept in your login keychain (service `app.cliprust`), and the whole database file can be encrypted too (`cliprust encryption on`, macOS only).
 
-ClipRust makes no network connections and collects no telemetry. Nothing leaves your Mac. When key detection is on, it asks the browser in front for the current page's address (Automation permission) so you can tell keys apart later; that address is stored only in the local database.
+ClipRust makes no network connections and collects no telemetry. Nothing leaves your Mac. When key detection is on, it asks the browser in front for the current page's address (Automation permission) so you can tell keys apart later; with Safari pages remembered it asks Safari for every copy made there, private windows included. That address is stored only in the local database.
 
 ## Uninstall
 
@@ -115,6 +118,7 @@ If ClipRust still shows up in System Settings → General → Login Items, remov
 | ⌘L | Go to a list or app |
 | ⌘D | Add to list |
 | ⌘⇧P | Pin |
+| ⌘⇧K | Mark as key, or not a key |
 | ⌘⇧S | Save search as list |
 | ⌘N | Edit the note inline (⏎ saves, Esc cancels, empty removes it) |
 | ⌘R | Rename inline |

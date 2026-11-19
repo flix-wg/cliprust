@@ -76,7 +76,7 @@ A menu-bar clipboard manager: a thin SwiftUI/AppKit shell over the Rust core in 
 | ⇥ (with an app suggestion) | make the app the search token |
 | ⌫ (at the start of the search field) | remove the app token |
 | ⌘⇧P | pin or unpin the item |
-| ⇧⌘K | mark as key, or not a key (for a key, after an inline confirmation: ⏎ confirms, Esc cancels) |
+| ⌘⇧K | mark as key, or not a key (for a key, after an inline confirmation: ⏎ confirms, Esc cancels) |
 | ⌘L | go to list: palette of every chip, then apps; ⏎ on an app shows its clips, ⏎ on an unknown name creates a manual list and switches to it |
 | ⌘D | add to list: palette of manual lists; ⏎ on an unknown name creates the list and adds; "Added to X" toast |
 | ⌘⇧S | save search as a smart list (text, app token, `is:` type and the active type or Contacts filter) and switch to it |
