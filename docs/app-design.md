@@ -142,7 +142,7 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
   - Keep: 500 / 1 000 / 5 000 / 10 000 / unlimited items
   - Delete items older than: never / 7 / 30 / 90 / 365 days
   - Pause recording
-  - Remember the page for copies from Safari (off by default): asks Safari for its current tab (URL and title) when a copy there brings no source URL, before key detection runs; turning it on asks for Automation permission, and a denied permission shows in the row with a link to System Settings. A lookup waits 400 ms at most, and after a failure copies skip it for 30 s
+  - Remember the page for copies from Safari (off by default): asks Safari for its current tab (URL and title) when a copy there brings no source URL, before key detection runs; turning it on asks for Automation permission, and a denied permission shows in the row with a link to System Settings. Every page lookup on the capture path, this one and the one for keys, waits 400 ms at most, and after any failure copies skip lookups for 30 s
   - Ignored apps (list with + to pick an app via `NSOpenPanel` in /Applications, − to remove)
   - Clear history… (confirmation dialog; items in lists are kept)
 - **Keys:**

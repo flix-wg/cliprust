@@ -8,6 +8,7 @@ use clipboard_rs::ClipboardContext;
 
 use crate::capture::{self, Skipped};
 use crate::model::{Kind, SecretKind};
+use crate::secrets::PageContext;
 use crate::store::{Ingest, Store};
 use crate::{Error, Result, platform, secrets};
 
@@ -61,22 +62,20 @@ impl Default for Config {
     }
 }
 
-/// How long asking Safari for its tab may hold up a capture; osascript
-/// itself takes much of it.
-const SAFARI_TIMEOUT: Duration = Duration::from_millis(400);
-/// After a failed Safari lookup (denied, timed out) copies are stored
-/// without one for this long, so a burst of copies does not ask each time.
-const SAFARI_BACKOFF: Duration = Duration::from_secs(30);
-/// Asking a browser for the page behind a key may wait for its permission prompt.
-const KEY_PAGE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a browser page lookup may hold up a capture; starting
+/// osascript takes much of it.
+const PAGE_TIMEOUT: Duration = Duration::from_millis(400);
+/// After a failed lookup (denied, timed out, prompt pending) copies are
+/// stored without one for this long, so a burst of copies does not ask each time.
+const PAGE_BACKOFF: Duration = Duration::from_secs(30);
 
 struct Handler<S, F> {
     store: S,
     ctx: ClipboardContext,
     max_item_bytes: usize,
     on_event: F,
-    /// No Safari lookups before this, after one failed.
-    safari_retry: Option<Instant>,
+    /// No page lookups before this, after one failed.
+    page_retry: Option<Instant>,
 }
 
 impl<S: StoreAccess, F: FnMut(Event)> Handler<S, F> {
@@ -95,6 +94,18 @@ impl<S: StoreAccess, F: FnMut(Event)> clipboard_rs::ClipboardHandler for Handler
 }
 
 impl<S: StoreAccess, F> Handler<S, F> {
+    /// The browser's front tab, unless a lookup failed a moment ago. Every
+    /// lookup on the capture path goes through here, within one budget.
+    fn page(&mut self, bundle_id: &str) -> Option<PageContext> {
+        if !platform::has_pages(bundle_id) || self.page_retry.is_some_and(|at| Instant::now() < at)
+        {
+            return None;
+        }
+        let page = platform::browser_page(bundle_id, PAGE_TIMEOUT);
+        self.page_retry = page.is_none().then(|| Instant::now() + PAGE_BACKOFF);
+        page
+    }
+
     fn capture(&mut self) -> Result<Event> {
         let settings = self.store.with(|s| {
             s.revalidate()?;
@@ -122,23 +133,19 @@ impl<S: StoreAccess, F> Handler<S, F> {
             .filter(|b| platform::SAFARI.contains(b))
             && settings.safari_pages
             && cap.source_url.is_none()
-            && self.safari_retry.is_none_or(|at| Instant::now() >= at)
         {
             asked = true;
-            match platform::browser_page(safari, SAFARI_TIMEOUT) {
-                Some(page) => {
-                    cap.source_url = Some(page.url);
-                    cap.source_title = page.title;
-                    self.safari_retry = None;
-                }
-                None => self.safari_retry = Some(Instant::now() + SAFARI_BACKOFF),
+            if let Some(page) = self.page(safari) {
+                cap.source_url = Some(page.url);
+                cap.source_title = page.title;
             }
         }
         if settings.detect_keys {
             secrets::annotate(&mut cap, || {
-                (!asked)
-                    .then(|| platform::browser_page(bundle_id.as_deref()?, KEY_PAGE_TIMEOUT))
-                    .flatten()
+                if asked {
+                    return None;
+                }
+                self.page(bundle_id.as_deref()?)
             });
         }
         let now = crate::now_ms();
@@ -187,7 +194,7 @@ pub fn run(
         ctx: ClipboardContext::new().map_err(clip_err)?,
         max_item_bytes: config.max_item_bytes,
         on_event,
-        safari_retry: None,
+        page_retry: None,
     };
     watch(handler, config)
 }

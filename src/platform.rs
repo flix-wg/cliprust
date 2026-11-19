@@ -7,6 +7,20 @@ use crate::model::AppInfo;
 use crate::secrets::PageContext;
 
 pub const SAFARI: &[&str] = &["com.apple.Safari", "com.apple.SafariTechnologyPreview"];
+const CHROMIUM: &[&str] = &[
+    "com.google.Chrome",
+    "com.google.Chrome.canary",
+    "com.brave.Browser",
+    "com.microsoft.edgemac",
+    "company.thebrowser.Browser",
+    "com.vivaldi.Vivaldi",
+    "com.operasoftware.Opera",
+];
+
+/// Whether [`browser_page`] can ask this app for its front tab.
+pub fn has_pages(bundle_id: &str) -> bool {
+    CHROMIUM.contains(&bundle_id) || SAFARI.contains(&bundle_id)
+}
 
 #[cfg(target_os = "macos")]
 pub fn frontmost_app() -> Option<AppInfo> {
@@ -69,15 +83,6 @@ pub fn run_main_loop() -> ! {
 /// or `None` after `timeout`. macOS asks the user once per browser before
 /// allowing this.
 pub fn browser_page(bundle_id: &str, timeout: Duration) -> Option<PageContext> {
-    const CHROMIUM: &[&str] = &[
-        "com.google.Chrome",
-        "com.google.Chrome.canary",
-        "com.brave.Browser",
-        "com.microsoft.edgemac",
-        "company.thebrowser.Browser",
-        "com.vivaldi.Vivaldi",
-        "com.operasoftware.Opera",
-    ];
     let tab = if CHROMIUM.contains(&bundle_id) {
         "{URL, title} of active tab of front window"
     } else if SAFARI.contains(&bundle_id) {
