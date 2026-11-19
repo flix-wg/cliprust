@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use super::{PasteList, SUMMARY_SQL, Store};
 use crate::model::{ItemSummary, Kind};
-use crate::rules::{CONTAINS_SQL, SortType, contact_sql};
+use crate::rules::{CONTAINS_SQL, SortType, contact_sql, site_sql};
 use crate::{Contact, Result, contacts};
 
 /// Narrows [`Store::find`]; `None` fields match everything.
@@ -86,15 +86,7 @@ impl Store {
             clauses.push(contact_sql(contact, &mut params));
         }
         if let Some(site) = f.site {
-            clauses.push(
-                "p.source_domain LIKE ? ESCAPE '\\' OR ? LIKE '%.' || p.source_domain".into(),
-            );
-            let escaped = site
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            params.push(Value::from(format!("{escaped}%")));
-            params.push(Value::from(site.to_owned()));
+            clauses.push(site_sql(site, &mut params));
         }
         if let Some(app) = f.app {
             clauses.push("p.app_id = (SELECT id FROM applications WHERE bundle_id = ?)".into());

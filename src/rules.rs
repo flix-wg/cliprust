@@ -48,6 +48,10 @@ pub enum Rule {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contact: Option<Contact>,
     },
+    /// Copied from a web page on this site; see [`site_sql`].
+    Site {
+        domain: String,
+    },
 }
 
 impl Rule {
@@ -85,6 +89,7 @@ impl Rule {
             }
             Rule::Secret => "p.secret_kind = 'key'".into(),
             Rule::Contact { contact } => contact_sql(*contact, params),
+            Rule::Site { domain } => site_sql(domain, params),
         }
     }
 }
@@ -98,6 +103,23 @@ pub(crate) fn contact_sql(contact: Option<Contact>, params: &mut Vec<Value>) -> 
         }
         None => "p.contact IS NOT NULL".into(),
     }
+}
+
+/// Items copied from `site`: the stored domain or a subdomain of it, or for a
+/// word without a dot (`github`) any domain that starts with it.
+pub(crate) fn site_sql(site: &str, params: &mut Vec<Value>) -> String {
+    let site = site.to_lowercase();
+    if site.contains('.') {
+        params.push(site.clone().into());
+        params.push(site.into());
+        return "(p.source_domain = ? OR ? LIKE '%.' || p.source_domain)".into();
+    }
+    let escaped = site
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    params.push(format!("{escaped}%").into());
+    "p.source_domain LIKE ? ESCAPE '\\'".into()
 }
 
 fn join(rules: &[Rule], sep: &str, empty: &str, now: i64, params: &mut Vec<Value>) -> String {

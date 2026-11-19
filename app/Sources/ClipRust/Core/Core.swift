@@ -219,13 +219,14 @@ extension Core {
     func lists() async throws -> [ClipList] { try await call("lists") }
     /// With `terms`, `app` or `contact`, a smart list matching every term (and `kind`, if given).
     func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil,
-                    contact: String? = nil) async throws {
+                    contact: String? = nil, site: String? = nil) async throws {
         var p: [String: Any] = ["name": name]
-        if !terms.isEmpty || app != nil || contact != nil {
+        if !terms.isEmpty || app != nil || contact != nil || site != nil {
             var rules: [[String: Any]] = terms.map { ["type": "contains", "text": $0] }
             if let kind { rules.append(["type": "kind", "kind": kind.rawValue]) }
             if let app { rules.append(["type": "app", "bundle_id": app]) }
             if let contact { rules.append(contact == "any" ? ["type": "contact"] : ["type": "contact", "contact": contact]) }
+            if let site { rules.append(["type": "site", "domain": site]) }
             p["rule"] = ["type": "all", "rules": rules]
         }
         try await run("create_list", p)

@@ -174,6 +174,7 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
                 "app_term": s.app_term,
                 "contact": s.contact.map(contact_name),
                 "contact_terms": s.contact_terms,
+                "site": s.site,
             })
         }
         Request::Item { id } => {
@@ -480,6 +481,7 @@ mod tests {
                 "app_term": "from:chat",
                 "contact": "any",
                 "contact_terms": ["is:contact"],
+                "site": null,
             })
         );
         assert_eq!(

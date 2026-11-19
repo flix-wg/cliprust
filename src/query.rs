@@ -6,9 +6,9 @@
 //!   first six words are looked at; a word that names no stored app stays text.
 //! - `is:phone`, `is:email`, `is:address`, or `is:contact` for any of them,
 //!   keeps clips recognised as that contact type. The last one wins.
-//! - `site:github` or `source:github.com` keeps clips copied from a web page
-//!   whose domain starts with the word, or whose domain the word is a
-//!   subdomain of (`site:docs.github.com`). The last one wins.
+//! - `site:github.com` or `source:github.com` keeps clips copied from that
+//!   site or a page under it (`site:docs.github.com`); a word without a dot
+//!   (`site:git`) matches every domain that starts with it. The last one wins.
 
 use crate::store::{AppCount, Find, Store};
 use crate::{Contact, Result};
@@ -83,8 +83,6 @@ pub struct Search {
     pub contact_terms: Vec<String>,
     /// From the last `site:` word, lowercased.
     pub site: Option<String>,
-    /// Every `site:` word; none of them is searched as text.
-    pub site_terms: Vec<String>,
 }
 
 impl Search {
@@ -99,10 +97,7 @@ impl Search {
                     s.contact = Some(c);
                     s.contact_terms.push(word.to_owned());
                 }
-                Term::Site(site) => {
-                    s.site = Some(site.to_lowercase());
-                    s.site_terms.push(word.to_owned());
-                }
+                Term::Site(site) => s.site = Some(site.to_lowercase()),
                 _ => words.push((word, term)),
             }
         }
@@ -181,12 +176,18 @@ mod tests {
             path: None,
         });
         store.ingest(&cap, 1).unwrap();
-        let mut page = Capture::from_text("from a page".into());
-        page.source_url = Some("https://docs.github.com/en".into());
-        store.ingest(&page, 2).unwrap();
+        for (n, url) in ["https://docs.github.com/en", "https://github.company"]
+            .iter()
+            .enumerate()
+        {
+            let mut page = Capture::from_text(format!("page {n}"));
+            page.source_url = Some(url.to_string());
+            store.ingest(&page, 2 + n as i64).unwrap();
+        }
         for (query, hits) in [
-            ("site:git", 1),
-            ("source:docs.GitHub.com", 1),
+            ("site:git", 2),
+            ("site:gitlab.com source:docs.GitHub.com", 1),
+            ("site:github.com", 1),
             ("site:gitlab.com", 0),
         ] {
             let s = Search::resolve(&store, query, false).unwrap();

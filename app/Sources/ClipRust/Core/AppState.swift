@@ -160,10 +160,10 @@ final class AppState {
     }
 
     func createList(_ name: String, terms: [String] = [], kind: ItemKind? = nil, app: String? = nil,
-                    contact: String? = nil) async -> Bool {
+                    contact: String? = nil, site: String? = nil) async -> Bool {
         guard !Self.isReserved(name) else { return false }
         do {
-            try await core?.createList(name, terms: terms, kind: kind, app: app, contact: contact)
+            try await core?.createList(name, terms: terms, kind: kind, app: app, contact: contact, site: site)
             await refreshLists()
             return true
         } catch {
