@@ -41,6 +41,12 @@ enum Request {
     RevealKey {
         id: i64,
     },
+    MarkKey {
+        id: i64,
+    },
+    UnmarkKey {
+        id: i64,
+    },
     Secrets(SecretsQuery),
     SecretFacets {
         kind: Option<SecretKind>,
@@ -228,6 +234,8 @@ fn handle(h: &CrHandle, req: Request) -> R<Value> {
             Value::Null
         }
         Request::RevealKey { id } => json!(store.get(id)?.ok_or_else(no_item)?.text()),
+        Request::MarkKey { id } => json!(store.mark_key(id, now)?),
+        Request::UnmarkKey { id } => json!(store.unmark_key(id)?),
         Request::Secrets(SecretsQuery { filter, limit }) => {
             Value::from_iter(store.secrets(&filter, limit)?.iter().map(summary))
         }

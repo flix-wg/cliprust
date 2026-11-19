@@ -363,6 +363,19 @@ fn is_id(v: &str) -> bool {
     (prefixed || lowercase) && digits >= 3 && letters > 0 && entropy(v) >= 3.5
 }
 
+/// How a password shows: nothing of it, not even its length.
+pub const PASSWORD_MASK: &str = "••••••••";
+
+/// Masks a value marked as a key by hand: a long token keeps its ends, as
+/// detected keys do; anything shorter may be a password and shows nothing.
+pub fn mask_marked(value: &str) -> String {
+    if value.chars().count() >= 32 {
+        mask(value)
+    } else {
+        PASSWORD_MASK.to_owned()
+    }
+}
+
 pub fn mask(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() < 16 {

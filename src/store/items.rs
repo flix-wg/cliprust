@@ -12,7 +12,7 @@ use crate::rules::SortType;
 use crate::{contacts, schema, secrets};
 
 /// FTS indexes at most this much of a clip; the full text stays in the payload.
-const INDEXED_TEXT_LIMIT: usize = 64 * 1024;
+pub(super) const INDEXED_TEXT_LIMIT: usize = 64 * 1024;
 /// Items in a manual list are kept by retention and `prune`.
 const UNLISTED: &str = "p.id NOT IN (SELECT item_id FROM paste_list_items)";
 
@@ -38,27 +38,51 @@ impl Store {
     /// A key is stored sealed with the master key and a keyed checksum. When
     /// that key is unavailable the key is not stored at all and this returns
     /// [`crate::Error::Locked`]; only without any key store (Linux) is it
-    /// stored unsealed, as before.
+    /// stored unsealed, as before. Content marked as a key, or as not a
+    /// key, stays that way whatever detection says about this copy.
     pub fn ingest(&mut self, cap: &Capture, now: i64) -> Result<Ingest> {
         let plain_checksum = cap.checksum() as i64;
-        let is_key = cap
-            .secret
-            .as_ref()
-            .is_some_and(|s| s.kind == SecretKind::Key);
+        let primary = cap.reps.first().map_or(&[][..], |r| &r.data);
         let keys = &self.keys;
         // Take the write lock up front so a concurrent writer cannot void
         // this transaction's snapshot between the lookup and the write.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let sealer = if is_key { keys.sealer(&tx)? } else { None };
-        let checksum = match &sealer {
-            Some((_, k)) => k.checksum(
-                cap.kind.as_str(),
-                cap.reps.first().map_or(&[][..], |r| &r.data),
-            ),
+        let not_a_key = cap
+            .secret
+            .as_ref()
+            .is_some_and(|s| s.kind == SecretKind::Key)
+            && tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM paste_items WHERE checksum = ?1 AND secret_override = 0)",
+                [plain_checksum],
+                |r| r.get::<_, bool>(0),
+            )?;
+        let secret = cap.secret.as_ref().filter(|_| !not_a_key);
+        let is_key = secret.is_some_and(|s| s.kind == SecretKind::Key);
+        let mut sealer = if is_key { keys.sealer(&tx)? } else { None };
+        let mut checksum = match &sealer {
+            Some((_, k)) => k.checksum(cap.kind.as_str(), primary),
             None => plain_checksum,
         };
+        // A copy of content marked as a key is that key, though detection missed it.
+        if !is_key
+            && tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM paste_items WHERE secret_override = 1)",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?
+            && let Some(current) = keys.current(&tx)?
+        {
+            let keyed = current.1.checksum(cap.kind.as_str(), primary);
+            if tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM paste_items WHERE checksum = ?1)",
+                [keyed],
+                |r| r.get::<_, bool>(0),
+            )? {
+                (checksum, sealer) = (keyed, Some(current));
+            }
+        }
         let app_id = cap
             .app
             .as_ref()
@@ -92,7 +116,7 @@ impl Store {
                 wipe(&mut old);
             }
             let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
-            if let Some(secret) = &cap.secret
+            if let Some(secret) = secret
                 && apply_secret(&tx, id, old_kind, secret, domain.as_deref(), now)?
             {
                 tx.execute(OPTIMIZE_FTS, [])?;
@@ -103,13 +127,13 @@ impl Store {
             };
             Ingest::Duplicate(id)
         } else {
-            let contact = match (&cap.secret, cap.kind) {
+            let contact = match (secret, cap.kind) {
                 (None, Kind::Text | Kind::Url) => cap
                     .text()
                     .and_then(|t| contacts::join(&contacts::detect(t))),
                 _ => None,
             };
-            let (text, title, provider, secret_kind) = match &cap.secret {
+            let (text, title, provider, secret_kind) = match secret {
                 Some(s) => (
                     Some(s.masked.as_str()),
                     Some(s.name.as_str()),
@@ -147,7 +171,7 @@ impl Store {
             )?;
             let id = tx.last_insert_rowid();
             insert_reps(&tx, id, &cap.reps, sealer.as_ref())?;
-            if let Some(secret) = &cap.secret {
+            if let Some(secret) = secret {
                 file_secret(&tx, id, secret.kind, now)?;
             }
             Ingest::Inserted(id)
@@ -274,7 +298,7 @@ pub(super) fn upsert_app(conn: &Connection, app: &AppInfo, copies: i64) -> rusql
     )
 }
 
-fn truncate(s: &str, max_bytes: usize) -> &str {
+pub(super) fn truncate(s: &str, max_bytes: usize) -> &str {
     let mut end = max_bytes.min(s.len());
     while !s.is_char_boundary(end) {
         end -= 1;

@@ -144,14 +144,17 @@ impl Capture {
     }
 
     pub fn checksum(&self) -> u64 {
-        let mut hasher = Xxh3::new();
-        hasher.update(self.kind.as_str().as_bytes());
-        hasher.update(&[0]);
-        if let Some(rep) = self.reps.first() {
-            hasher.update(&rep.data);
-        }
-        hasher.digest()
+        plain_checksum(self.kind, self.reps.first().map_or(&[][..], |r| &r.data))
     }
+}
+
+/// The dedup checksum of content that is not a key; `primary` is `reps[0]`.
+pub(crate) fn plain_checksum(kind: Kind, primary: &[u8]) -> u64 {
+    let mut hasher = Xxh3::new();
+    hasher.update(kind.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(primary);
+    hasher.digest()
 }
 
 /// Formats that hold an item's text, in order of preference within its reps.

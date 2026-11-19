@@ -114,6 +114,17 @@ impl Keyring {
         self.mint(conn).map(Some)
     }
 
+    /// The current key if it reads; unlike [`Keyring::sealer`] it never mints one.
+    pub(super) fn current(&self, conn: &Connection) -> Result<Option<Sealer>> {
+        let Some(generation) = self.source.as_ref().and(current_gen(conn)?) else {
+            return Ok(None);
+        };
+        Ok(match self.probe(conn, generation)? {
+            Probe::Ready(keys) => Some((generation, keys)),
+            _ => None,
+        })
+    }
+
     /// Adds a new generation to the key store and makes it current. Holds
     /// the write lock, so two processes never both mint.
     fn mint(&self, conn: &Connection) -> Result<Sealer> {
@@ -492,7 +503,7 @@ impl Store {
     /// Rewrites the file so replaced plaintext leaves no trace in free pages
     /// or the WAL (`secure_delete` covers single deletes). Stays pending,
     /// and is retried on the next open, until the checkpoint completes.
-    fn scrub(&self) -> Result<()> {
+    pub(super) fn scrub(&self) -> Result<()> {
         let seen = setting(&self.conn, SCRUB_PENDING)?;
         self.conn.execute_batch("VACUUM")?;
         if schema::checkpoint(&self.conn) {
@@ -623,7 +634,7 @@ pub(super) fn seal_item(
 }
 
 /// Folds a duplicate item into `into`: lists, note and recency are kept.
-fn merge_into(conn: &Connection, from: i64, into: i64) -> Result<()> {
+pub(super) fn merge_into(conn: &Connection, from: i64, into: i64) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO paste_list_items (list_id, item_id, added_at) \
          SELECT list_id, ?2, added_at FROM paste_list_items WHERE item_id = ?1",
@@ -667,7 +678,7 @@ fn key_text(reps: &[Rep]) -> Option<&str> {
 const SCRUB_PENDING: &str = "scrub_pending";
 
 /// Flags a scrub, counting up so a scrub already running does not clear it.
-fn mark_scrub(conn: &Connection) -> Result<()> {
+pub(super) fn mark_scrub(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, '1') ON CONFLICT (key) \
          DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",

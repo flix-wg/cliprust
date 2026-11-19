@@ -148,7 +148,15 @@ INSERT INTO paste_items_fts (paste_items_fts) VALUES ('rebuild');
 PRAGMA user_version = 4;
 ";
 
-pub(crate) const VERSION: i64 = 4;
+/// The user's answer to "is this a key?", which detection must not undo:
+/// NULL leaves it to detection, 1 is a key, 0 is not a key.
+const V5: &str = r"
+ALTER TABLE paste_items ADD COLUMN secret_override INTEGER;
+CREATE INDEX paste_items_override ON paste_items (secret_override) WHERE secret_override IS NOT NULL;
+PRAGMA user_version = 5;
+";
+
+pub(crate) const VERSION: i64 = 5;
 
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
     // Both persist in the file, so only a new one is written; setting them
@@ -239,6 +247,9 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if version < 4 {
         tx.execute_batch(V4)?;
+    }
+    if version < 5 {
+        tx.execute_batch(V5)?;
     }
     tx.commit()
 }

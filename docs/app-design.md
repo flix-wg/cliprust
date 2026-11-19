@@ -260,6 +260,8 @@ void        cr_close(CrHandle *h);
 | `secrets` | `{kind?, provider?, domain?, limit}` → `[ItemSummary]` (keys and IDs) |
 | `secret_facets` | `{kind?}` → `{providers: [{name, count}], domains: [{name, count}]}` |
 | `reveal_key` | `{id}` → full value (Swift gates it behind LocalAuthentication) |
+| `mark_key` | `{id}` files a text item as a key whatever detection says: masked, sealed, out of the index; later copies and rescans keep it a key → the id that remains (a copy of a stored key merges into it); `locked` while the key that seals keys is unavailable |
+| `unmark_key` | `{id}` stores a key as plain, searchable text again, which detection then leaves alone → the id that remains; `locked` while its key is unavailable |
 | `settings` / `save_settings` | `Settings`; saving applies retention |
 | `excludes` / `add_exclude` / `remove_exclude` | the ignored apps, `{bundle_id}` |
 | `stats` | → `{items, raw_bytes, stored_bytes, file_bytes, path}` |

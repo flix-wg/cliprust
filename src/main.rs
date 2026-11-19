@@ -162,6 +162,12 @@ enum KeysCmd {
     RecoveryCode,
     /// Put the master key back from a recovery code read from stdin
     Restore,
+    /// File an item as a key: masked, encrypted and kept a key whatever
+    /// detection says about later copies
+    Mark { id: i64 },
+    /// File a key as plain text again: unencrypted, searchable and never
+    /// detected as a key again
+    Unmark { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -411,6 +417,20 @@ fn run(cli: Cli) -> CliResult {
             cmd: Some(KeysCmd::Restore),
             ..
         } => unreachable!("handled before opening the store"),
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Mark { id }),
+            ..
+        } => {
+            store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            println!("#{} is a key now", store.mark_key(id, now_ms())?);
+        }
+        Cmd::Keys {
+            cmd: Some(KeysCmd::Unmark { id }),
+            ..
+        } => {
+            store.summary(id)?.ok_or_else(|| format!("no item #{id}"))?;
+            println!("#{} is plain text now", store.unmark_key(id)?);
+        }
         Cmd::Keys {
             cmd: Some(KeysCmd::Facets),
             ..

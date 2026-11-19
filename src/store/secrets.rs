@@ -1,16 +1,20 @@
-//! Detected keys and IDs: masking and filing them, the Keys window's
-//! queries and the one-time scan of older history.
+//! Detected keys and IDs: masking and filing them, marking them by hand,
+//! the Keys window's queries and the one-time scan of older history.
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 
+use super::items::{INDEXED_TEXT_LIMIT, truncate};
+use super::keys::{mark_scrub, merge_into, seal_item};
 use super::lists::{IDS_LIST, KEYS_LIST, add_member};
-use super::reps::load_reps;
+use super::reps::{insert_reps, load_reps, wipe};
 use super::{OPTIMIZE_FTS, SUMMARY_SQL, Store};
-use crate::model::{AppInfo, Capture, ItemSummary, Kind, Secret, SecretKind};
+use crate::model::{
+    AppInfo, Capture, ItemSummary, Kind, Secret, SecretKind, plain_checksum, text_of,
+};
 use crate::rules::SortType;
-use crate::{Result, secrets};
+use crate::{Error, Result, contacts, secrets};
 
 /// Narrows [`Store::secrets`]; `None` fields match everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +81,134 @@ impl Store {
         Ok(facets)
     }
 
+    /// Files text item `id` as a key whatever detection says: masked, sealed
+    /// like a detected key and kept a key by later copies and rescans.
+    /// [`Error::Locked`] while the key that seals keys is unavailable.
+    /// Returns the id that remains: a copy of a key already stored merges into it.
+    pub fn mark_key(&mut self, id: i64, now: i64) -> Result<i64> {
+        let keys = &self.keys;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        type Row = (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let (kind, old_kind, title, domain, app): Row = tx.query_row(
+            "SELECT p.kind, p.secret_kind, p.title, p.source_domain, a.name FROM paste_items p \
+             LEFT JOIN applications a ON a.id = p.app_id WHERE p.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+        if !matches!(Kind::parse(&kind), Some(Kind::Text | Kind::Url)) {
+            return Err(Error::Refused("only text can be marked as a key".into()));
+        }
+        let old_kind = old_kind.as_deref().and_then(SecretKind::parse);
+        let sealer = keys.sealer(&tx)?;
+        let mut kept = id;
+        if old_kind != Some(SecretKind::Key) {
+            let mut reps = load_reps(&tx, keys, id)?;
+            let masked = text_of(&reps)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(secrets::mask_marked);
+            wipe(&mut reps);
+            let masked = masked.ok_or_else(|| Error::Refused("the item has no text".into()))?;
+            let site = domain.as_deref().map(secrets::site_name);
+            let secret = Secret {
+                kind: SecretKind::Key,
+                name: site
+                    .as_ref()
+                    .map_or("Key".to_owned(), |s| format!("{s} key")),
+                provider: site.or(app).unwrap_or_else(|| "Marked by hand".to_owned()),
+                masked,
+            };
+            apply_secret(&tx, id, old_kind, &secret, None, now)?;
+            // The row shows the masked value; only an ID's made-up title is replaced.
+            if old_kind.is_none() {
+                tx.execute(
+                    "UPDATE paste_items SET title = ?2 WHERE id = ?1",
+                    params![id, title],
+                )?;
+            }
+            tx.execute(OPTIMIZE_FTS, [])?;
+            if let Some(sealer) = &sealer {
+                kept = seal_item(&tx, keys, id, sealer)?;
+                mark_scrub(&tx)?;
+            }
+        }
+        tx.execute(
+            "UPDATE paste_items SET secret_override = 1 WHERE id = ?1",
+            [kept],
+        )?;
+        tx.commit()?;
+        if sealer.is_some() && old_kind != Some(SecretKind::Key) {
+            self.scrub()?;
+        }
+        Ok(kept)
+    }
+
+    /// Files key item `id` as plain text again, stored unsealed and
+    /// searchable, and detection leaves it alone from now on. Returns the id
+    /// that remains: the same text stored before merges with it.
+    pub fn unmark_key(&mut self, id: i64) -> Result<i64> {
+        let keys = &self.keys;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (kind, secret_kind): (String, Option<String>) = tx.query_row(
+            "SELECT kind, secret_kind FROM paste_items WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let mut kept = id;
+        if let (Some(kind), Some("key")) = (Kind::parse(&kind), secret_kind.as_deref()) {
+            let mut reps = load_reps(&tx, keys, id)?;
+            let checksum = plain_checksum(kind, reps.first().map_or(&[][..], |r| &r.data)) as i64;
+            let twin: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM paste_items WHERE checksum = ?1 AND id != ?2",
+                    params![checksum, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let result = match twin {
+                Some(into) => merge_into(&tx, id, into).map(|()| into),
+                None => (|| {
+                    let text = text_of(&reps).map(|t| truncate(t, INDEXED_TEXT_LIMIT));
+                    let contact = text.and_then(|t| contacts::join(&contacts::detect(t)));
+                    // A title that detection made up from the provider goes too.
+                    tx.execute(
+                        "UPDATE paste_items SET text = ?2, checksum = ?3, contact = ?4, \
+                         title = CASE WHEN title = secret_provider OR substr(title, 1, \
+                         length(secret_provider) + 1) = secret_provider || ' ' THEN NULL ELSE title END, \
+                         secret_kind = NULL, secret_provider = NULL WHERE id = ?1",
+                        params![id, text, checksum, contact],
+                    )?;
+                    tx.execute("DELETE FROM paste_item_data WHERE item_id = ?1", [id])?;
+                    insert_reps(&tx, id, &reps, None)?;
+                    Ok(id)
+                })(),
+            };
+            wipe(&mut reps);
+            kept = result?;
+            tx.execute(
+                "DELETE FROM paste_list_items WHERE item_id = ?1 \
+                 AND list_id = (SELECT id FROM paste_lists WHERE name = ?2)",
+                params![kept, KEYS_LIST],
+            )?;
+        }
+        tx.execute(
+            "UPDATE paste_items SET secret_override = 0 WHERE id = ?1",
+            [kept],
+        )?;
+        tx.commit()?;
+        Ok(kept)
+    }
+
     /// History stored before key detection was on by default is scanned once.
     pub(super) fn scan_keys_once(&mut self) -> Result<()> {
         let done = self
@@ -120,7 +252,8 @@ impl Store {
             .prepare(
                 "SELECT p.id, p.kind, p.last_used_at, p.source_url, p.source_title, a.bundle_id, a.name \
                  FROM paste_items p LEFT JOIN applications a ON a.id = p.app_id \
-                 WHERE p.kind IN ('text', 'url') AND p.secret_kind IS NULL",
+                 WHERE p.kind IN ('text', 'url') AND p.secret_kind IS NULL \
+                 AND p.secret_override IS NULL",
             )?
             .query_map([], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
@@ -290,5 +423,38 @@ mod tests {
         assert!(!item.preview.unwrap().contains("Hh8Ii9"));
         assert!(s.search("Hh8Ii9", 10).unwrap().is_empty());
         assert_eq!(s.rescan_keys().unwrap(), 0);
+    }
+
+    #[test]
+    fn marking_by_hand_seals_or_unseals_and_outlasts_detection() {
+        use super::super::keys::tests::{VALUE, on_disk};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let keys = std::sync::Arc::new(crate::crypto::MemoryKeys::default());
+        let mut s = Store::open_with_keys(&path, Some(keys)).unwrap();
+        let password = "Zq8wX3vLp-staging";
+        let id = add(&mut s, password, None, 1);
+        s.set_note(id, Some("Zq8wX3vLp-staging for the replica"))
+            .unwrap();
+        assert_eq!(s.mark_key(id, 2).unwrap(), id);
+        assert!(!on_disk(&path, "Zq8wX3vLp"));
+        assert!(s.search("Zq8wX3", 10).unwrap().is_empty());
+        assert_eq!(s.get(id).unwrap().unwrap().text(), Some(password));
+        // Detection sees plain text here, but the marked value stays the key.
+        assert_eq!(
+            s.ingest(&Capture::from_text(password.into()), 3).unwrap(),
+            Ingest::Duplicate(id)
+        );
+
+        let mut key = Capture::from_text(VALUE.into());
+        crate::secrets::annotate(&mut key, || None);
+        let key_id = s.ingest(&key, 4).unwrap().id();
+        assert_eq!(s.unmark_key(key_id).unwrap(), key_id);
+        assert_eq!(ids(s.search(&VALUE[8..20], 10).unwrap()), [key_id]);
+        assert_eq!(s.ingest(&key, 5).unwrap(), Ingest::Duplicate(key_id));
+        assert_eq!(s.rescan_keys().unwrap(), 0);
+        let item = s.summary(key_id).unwrap().unwrap();
+        assert_eq!((item.secret_kind, item.last_used_at), (None, 5));
+        assert_eq!(s.encryption_status().unwrap().pending, 0);
     }
 }
