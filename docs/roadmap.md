@@ -21,8 +21,15 @@ ClipRust stays small: the default app has no network access, no background helpe
 | Snippets | Saved text with placeholders | core |
 | Merge clips | Join selected clips with a separator | core |
 | Shortcuts actions and URL scheme | Automation | app |
-| Ignore list per app | Never record from chosen apps (password managers already skipped) | app |
 | Opt-in E2E sync | Several Macs | add-on, later; never on by default |
+
+## Distribution
+| Item | Why |
+|---|---|
+| Firefox add-on on addons.mozilla.org | Install it without loading a temporary add-on by hand |
+| Homebrew cask and formula | `brew install --cask cliprust` for the app, a formula for the CLI |
+| Intel build | Releases are Apple silicon only today |
+| Update notice | Tell you when a new release is out; opt-in, since the app makes no network requests by default |
 
 ## Not planned
 Cloud accounts, telemetry, ads or paid tiers. ClipRust stays free and MIT.
