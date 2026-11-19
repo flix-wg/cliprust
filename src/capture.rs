@@ -163,17 +163,21 @@ pub fn read(ctx: &impl Clipboard, max_bytes: usize) -> std::result::Result<Captu
             .flatten()
             .filter(|bytes| bytes.len() <= max)
     };
+    let clean = |url: String| {
+        Some(url.trim_end_matches('\0').trim().to_owned())
+            .filter(|url| !url.is_empty() && url.len() <= MAX_SOURCE_URL_BYTES)
+    };
     cap.source_url = types::SOURCE_URL_TYPES
         .iter()
         .find_map(|ty| buffer(ty, MAX_SOURCE_URL_BYTES))
         .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(clean)
         .or_else(|| {
             buffer(types::FIREFOX_CUSTOM_TYPE, MAX_FIREFOX_CUSTOM_BYTES)
                 .and_then(|bytes| firefox_custom_data(&bytes, EXTENSION_SOURCE_TYPE))
+                .and_then(clean)
                 .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
-        })
-        .map(|url| url.trim_end_matches('\0').trim().to_owned())
-        .filter(|url| !url.is_empty() && url.len() <= MAX_SOURCE_URL_BYTES);
+        });
     Ok(cap)
 }
 

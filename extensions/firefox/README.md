@@ -11,6 +11,7 @@ A content script listens for `copy` on every http(s) page and adds the page URL 
 - If the page handles the copy itself, the add-on only adds its type.
 - Otherwise Firefox would ignore any added data, so the add-on writes the selection as plain text and HTML itself and cancels the default copy.
 - Password fields are left alone, and copies the page stops from propagating get no source.
+- A page script that listens on `window` and skips its copy logic when the event is already cancelled would lose its own copy; no such page is known yet.
 
 It has no background script, no network access and no storage, and asks for no permissions beyond running on web pages. A page can set the same type itself, so treat the source as a hint, the same as the Chromium one.
 
