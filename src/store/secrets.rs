@@ -16,6 +16,9 @@ use crate::model::{
 use crate::rules::SortType;
 use crate::{Error, Result, contacts, secrets};
 
+/// Raised when detection learns a new kind of key; 2 added passwords.
+const KEY_SCAN: u32 = 2;
+
 /// Narrows [`Store::secrets`]; `None` fields match everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -209,24 +212,25 @@ impl Store {
         Ok(kept)
     }
 
-    /// History stored before key detection was on by default is scanned once.
+    /// History stored before key detection was on by default is scanned
+    /// once, and once more whenever detection learns a new kind of key.
     pub(super) fn scan_keys_once(&mut self) -> Result<()> {
-        let done = self
+        let done: Option<String> = self
             .conn
             .query_row(
-                "SELECT 1 FROM settings WHERE key = 'keys_scanned'",
+                "SELECT value FROM settings WHERE key = 'keys_scanned'",
                 [],
-                |_| Ok(()),
+                |r| r.get(0),
             )
-            .optional()?
-            .is_some();
-        if !done {
+            .optional()?;
+        if done.and_then(|v| v.parse().ok()).unwrap_or(0) < KEY_SCAN {
             if self.settings()?.detect_keys {
                 self.rescan_keys()?;
             }
             self.conn.execute(
-                "INSERT OR IGNORE INTO settings (key, value) VALUES ('keys_scanned', '1')",
-                [],
+                "INSERT INTO settings (key, value) VALUES ('keys_scanned', ?1) \
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [KEY_SCAN.to_string()],
             )?;
         }
         Ok(())

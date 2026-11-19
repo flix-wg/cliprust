@@ -318,7 +318,7 @@ struct KeysPane: View {
         Form {
             Section {
                 Toggle(isOn: Binding(get: { app.settings.detectKeys }, set: { v in app.update { $0.detectKeys = v } })) {
-                    Text("Detect API keys and IDs")
+                    Text("Detect API keys, passwords and IDs")
                     Text("Keys are masked in the list and filed under Keys.")
                 }
                 Toggle(isOn: $requireAuth) {

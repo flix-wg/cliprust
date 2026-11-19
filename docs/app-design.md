@@ -145,7 +145,7 @@ A standard window (900 × 560), opened from the menu or with ⌘K.
   - Ignored apps (list with + to pick an app via `NSOpenPanel` in /Applications, − to remove)
   - Clear history… (confirmation dialog; items in lists are kept)
 - **Keys:**
-  - Detect API keys and IDs
+  - Detect API keys, passwords and IDs (generated passwords and Apple app-specific passwords; ones without symbols only on a sign-in page)
   - Require Touch ID to reveal or copy keys
   - Look up the browser page when a key is copied (explains the one-time Automation prompt)
 - **Security:**

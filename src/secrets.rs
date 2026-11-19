@@ -112,6 +112,36 @@ const SITE_NAMES: &[(&str, &str)] = &[
 /// Words in a page URL or title that make an unrecognised random token a key.
 const CONTEXT_HINTS: &[&str] = &["key", "token", "secret", "credential", "api", "auth"];
 
+/// Words in a page URL or title, or a variable name, that make a
+/// password-shaped value without symbols count as a password.
+const PASSWORD_HINTS: &[&str] = &[
+    "password",
+    "passwort",
+    "passwd",
+    "passcode",
+    "pwd",
+    "login",
+    "log-in",
+    "log in",
+    "signin",
+    "sign-in",
+    "sign in",
+    "sign_in",
+    "signup",
+    "sign-up",
+    "sign up",
+    "register",
+    "credential",
+    "app-specific",
+];
+
+const PASSWORD: &str = "Password";
+const APPLE_PASSWORD: &str = "Apple app-specific password";
+
+/// Base64 lengths of common hashes and keys (16 to 64 bytes); a password
+/// of one of these lengths without symbols is more likely an encoded value.
+const BASE64_LENGTHS: &[usize] = &[22, 24, 27, 28, 32, 40, 43, 44, 64, 86, 88];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detection {
     /// `None` for a random-looking token that needs a context hint to count.
@@ -188,13 +218,13 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
         return;
     };
     let found = detect(text);
-    let id = match &found {
+    let (id, password) = match &found {
         Some(Detection {
             provider: Some(_), ..
-        }) => None,
-        _ => id_span(text),
+        }) => (None, None),
+        _ => (id_span(text), password_span(text)),
     };
-    if found.is_none() && id.is_none() {
+    if found.is_none() && id.is_none() && password.is_none() {
         return;
     }
     if cap.source_url.is_none()
@@ -244,9 +274,18 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
                 let label = format!("{site} ID");
                 (SecretKind::Id, site, label, vec![range])
             }
-            _ => return,
+            _ => match password {
+                Some((range, provider, sure))
+                    if sure || password_hinted(cap, provider, &text[..range.start]) =>
+                {
+                    let provider = provider.to_owned();
+                    (SecretKind::Key, provider.clone(), provider, vec![range])
+                }
+                _ => return,
+            },
         },
     };
+    let hide_all = matches!(provider.as_str(), PASSWORD | APPLE_PASSWORD);
     let place = url_host
         .or(cap.source_title.as_deref())
         .or(app)
@@ -265,7 +304,11 @@ pub fn annotate(cap: &mut Capture, page: impl FnOnce() -> Option<PageContext>) {
             let mut end = 0;
             for range in &ranges {
                 masked.push_str(&text[end..range.start]);
-                masked.push_str(&mask(&text[range.clone()]));
+                if hide_all {
+                    masked.push_str(PASSWORD_MASK);
+                } else {
+                    masked.push_str(&mask(&text[range.clone()]));
+                }
                 end = range.end;
             }
             masked.push_str(&text[end..]);
@@ -329,6 +372,187 @@ fn id_span(text: &str) -> Option<Range<usize>> {
         return None;
     }
     is_id(&text[start..end]).then_some(start..end)
+}
+
+/// The span of a single copied password, alone or as `NAME=value`, its
+/// provider, and whether its shape alone makes it one (else it needs a hint).
+fn password_span(text: &str) -> Option<(Range<usize>, &'static str, bool)> {
+    let token = text.trim();
+    let start = text.len() - text.trim_start().len();
+    let assigned = token.find('=').and_then(|eq| {
+        assigned_name(&text[..start + eq + 1])?;
+        let value = &token[eq + 1..];
+        let lead = value.len() - value.trim_start_matches(['"', '\'']).len();
+        let value = value.trim_matches(['"', '\'']);
+        let at = start + eq + 1 + lead;
+        password(value).map(|(provider, sure)| (at..at + value.len(), provider, sure))
+    });
+    assigned.or_else(|| {
+        password(token).map(|(provider, sure)| (start..start + token.len(), provider, sure))
+    })
+}
+
+/// Whether the page, or the variable a password is assigned to, talks about logging in.
+fn password_hinted(cap: &Capture, provider: &str, prefix: &str) -> bool {
+    let hints = |s: Option<&str>| {
+        s.is_some_and(|s| {
+            let s = s.to_ascii_lowercase();
+            PASSWORD_HINTS.iter().any(|h| s.contains(h))
+                || (provider == APPLE_PASSWORD && s.contains("apple"))
+        })
+    };
+    hints(cap.source_url.as_deref())
+        || hints(cap.source_title.as_deref())
+        || hints(assigned_name(prefix))
+}
+
+/// A generated password: Apple's app-specific (`abcd-efgh-ijkl-mnop`) or
+/// strong (`abcdef-ghijk1-lmnopQ`) shape, or one token of 12–128 printable
+/// characters with lower case and two of upper case, digits and symbols that
+/// looks random and is not a URL, address, path, file name, hash, date,
+/// version or identifier. Returns the provider and whether the shape alone
+/// is enough: without a symbol beyond the separators `-_./:` it needs a
+/// hint, since IDs, codes and tokens look like that too.
+fn password(token: &str) -> Option<(&'static str, bool)> {
+    let b = token.as_bytes();
+    if !(12..=128).contains(&b.len()) || !b.iter().all(u8::is_ascii_graphic) {
+        return None;
+    }
+    let groups: Vec<&str> = token.split('-').collect();
+    let shaped = |n: usize, len: usize, ok: fn(&u8) -> bool| {
+        groups.len() == n
+            && groups
+                .iter()
+                .all(|g| g.len() == len && g.bytes().all(|c| ok(&c)))
+    };
+    if shaped(4, 4, u8::is_ascii_lowercase) {
+        // Random letters; a group with no vowel rules out a slug like what-does-this-mean.
+        let sure = groups
+            .iter()
+            .any(|g| !g.bytes().any(|c| b"aeiouy".contains(&c)));
+        return Some((APPLE_PASSWORD, sure));
+    }
+    let has = |f: fn(&u8) -> bool| b.iter().any(f);
+    if shaped(3, 6, u8::is_ascii_alphanumeric)
+        && has(u8::is_ascii_uppercase)
+        && has(u8::is_ascii_digit)
+    {
+        return Some((PASSWORD, true));
+    }
+    let classes = [
+        has(u8::is_ascii_uppercase),
+        has(u8::is_ascii_digit),
+        has(u8::is_ascii_punctuation),
+    ];
+    if !has(u8::is_ascii_lowercase)
+        || classes.iter().filter(|c| **c).count() < 2
+        || structured(token)
+    {
+        return None;
+    }
+    let random = entropy(token) >= 0.85 * (b.len() as f64).log2().min(5.0);
+    let sure = b
+        .iter()
+        .any(|c| c.is_ascii_punctuation() && !b"-_./:".contains(c));
+    random.then_some((PASSWORD, sure))
+}
+
+/// Values with a recognisable structure, which a random password lacks.
+fn structured(token: &str) -> bool {
+    let b = token.as_bytes();
+    let only = |set: &str| token.chars().all(|c| c.is_ascii_digit() || set.contains(c));
+    let email = token.split_once('@').is_some_and(|(local, host)| {
+        !local.is_empty()
+            && host.contains('.')
+            && host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    });
+    let path = token.starts_with(['/', '~'])
+        || token.starts_with("./")
+        || token.starts_with("../")
+        || token.contains('\\')
+        || token.matches('/').count() >= 2;
+    // `report.pdf`, `example.com`: a short lowercase suffix after the last dot.
+    let extension = token.rsplit_once('.').is_some_and(|(_, ext)| {
+        (2..=4).contains(&ext.len())
+            && ext
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && ext.bytes().any(|c| c.is_ascii_lowercase())
+    });
+    let uuid = b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    let base64 = token.ends_with('=')
+        || (BASE64_LENGTHS.contains(&b.len())
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+/-_".contains(c)));
+    let hex = token
+        .strip_prefix("0x")
+        .unwrap_or(token)
+        .bytes()
+        .all(|c| c.is_ascii_hexdigit());
+    // Generators use a few symbols; code and prose use many (`Fn::GetAtt[A,B]`).
+    let punctuated = b.iter().filter(|c| c.is_ascii_punctuation()).count() * 3 >= b.len();
+    token.contains("://")
+        || token.starts_with("www.")
+        || punctuated
+        || email
+        || path
+        || extension
+        || uuid
+        || base64
+        || hex
+        || only(".,'_ +-")
+        || only("-:./TZ+")
+        || semver(token)
+        || identifier(token)
+}
+
+/// `1.2.3`, `v1.24.3-beta.2+build7`.
+fn semver(token: &str) -> bool {
+    let core = token.trim_start_matches(['v', 'V']);
+    let core = core.split(['-', '+']).next().unwrap_or(core);
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// Words joined by symbols or case, like `MAX_RETRY_COUNT_2`, `iPhone15Pro`
+/// or `user@host:22`: at most one run of letters is not a word (two or more
+/// letters with a vowel), where a random password has many runs like `Kx` or `q`.
+fn identifier(token: &str) -> bool {
+    let mut runs: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let b = token.as_bytes();
+    for i in 1..=b.len() {
+        let split = i == b.len()
+            || !b[i].is_ascii_alphanumeric()
+            || !b[i - 1].is_ascii_alphanumeric()
+            || b[i].is_ascii_digit() != b[i - 1].is_ascii_digit()
+            || (b[i - 1].is_ascii_lowercase() && b[i].is_ascii_uppercase());
+        if split {
+            runs.push(&token[start..i]);
+            start = i;
+        }
+    }
+    let not_words = runs
+        .iter()
+        .filter(|r| r.bytes().all(|c| c.is_ascii_alphabetic()))
+        .filter(|r| {
+            r.len() < 2
+                || !r
+                    .bytes()
+                    .any(|c| b"aeiouy".contains(&c.to_ascii_lowercase()))
+        })
+        .count();
+    not_words <= 1
 }
 
 /// UUIDs, hex IDs (not 40- or 64-digit commit hashes), `prefix_` IDs and
@@ -577,5 +801,51 @@ mod tests {
         let gh = Some("https://github.com/x/y/commit/9fceb02");
         assert_eq!(annotated(commit, gh, None), None);
         assert_eq!(annotated(zone, None, None), None);
+    }
+
+    #[test]
+    fn passwords_need_a_random_shape_and_symbols_or_a_login_page() {
+        let login = Some("https://accounts.example.com/signin");
+        let apple = Some("https://account.apple.com/account/manage");
+        let cases = [
+            ("xkcd-qrst-pwvb-hmzt", None, Some(APPLE_PASSWORD)),
+            ("abcd-efgh-ijkl-mnop", apple, Some(APPLE_PASSWORD)),
+            ("what-does-this-mean", None, None),
+            ("dykvoh-Xijpu3-fozwek", None, Some(PASSWORD)),
+            ("k3J#q9!xWm2pZ", None, Some(PASSWORD)),
+            ("  Zq8w!X3vLp_7rT  ", None, Some(PASSWORD)),
+            ("Kx9mQ2pLzR7vT4", None, None),
+            ("Kx9mQ2pLzR7vT4", login, Some(PASSWORD)),
+            ("https://example.com/a?b=C1", None, None),
+            ("first.last+Tag1@example.com", None, None),
+            ("/Users/Shared/Build-2024/app.log", None, None),
+            ("3F2504E0-4F89-11D3-9A0C-0305E82C3301", None, None),
+            ("DeadBeefCafe0123456789ab", login, None),
+            ("SGVsbG8gV29ybGQhIQ==", login, None),
+            ("Q2xpcFJ1c3RQYXNzd29yZA", login, None),
+            ("2024-01-15T10:30:00.000Z", None, None),
+            ("v1.24.3-Beta.2+Build7", None, None),
+            ("MAX_RETRY_COUNT_2", None, None),
+            ("getUserById2", login, None),
+            ("user@host.example:22", None, None),
+            ("Meeting at 10:30, Room B2!", None, None),
+            ("1,234,567.89", None, None),
+            ("iPhone15Pro-Max", None, None),
+            ("Fn::GetAtt[A,B]", None, None),
+            ("e.g.,ABC-123;", None, None),
+            ("Q3-2024_Report.pdf", None, None),
+            ("SKU-48213-Blk", None, None),
+            ("AB-1234-XY-5678", None, None),
+            ("C:\\Users\\Shared\\Build7", None, None),
+        ];
+        for (text, url, want) in cases {
+            let got = annotated(text, url, None).filter(|s| s.kind == SecretKind::Key);
+            assert_eq!(got.as_ref().map(|s| s.provider.as_str()), want, "{text}");
+        }
+        let s = annotated("DB_PASSWORD=\"k3J#q9!xWm2pZ\"", None, None).unwrap();
+        assert_eq!(
+            (s.name.as_str(), s.masked.as_str()),
+            ("DB_PASSWORD", "DB_PASSWORD=\"••••••••\"")
+        );
     }
 }
