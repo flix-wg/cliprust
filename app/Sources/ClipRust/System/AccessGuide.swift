@@ -11,8 +11,11 @@ final class AccessGuide: NSObject, NSWindowDelegate {
     private var timer: Timer?
     private let model = AccessGuideModel()
 
-    func show() {
-        model.trusted = Paster.isTrusted
+    /// `afterPaste`: a chosen item just landed on the clipboard instead of being pasted.
+    func show(afterPaste: Bool = false) {
+        guard !Paster.isTrusted else { return }
+        model.trusted = false
+        model.afterPaste = afterPaste
         if window == nil {
             let view = AccessGuideView(model: model, fix: { [weak self] in self?.fix() }, copyOnly: { [weak self] in
                 UserDefaults.standard.set(AfterChoosing.copy.rawValue, forKey: Prefs.Key.afterChoosing)
@@ -42,9 +45,15 @@ final class AccessGuide: NSObject, NSWindowDelegate {
     /// Clears a stale entry left by an earlier build, adds ClipRust to the list and opens it.
     /// macOS ties the grant to the code signature, so after an update the old switch can look on yet not count.
     private func fix() {
+        guard !model.resetting, !Paster.isTrusted else { return }
         model.waiting = true
+        model.resetting = true
         Task {
-            model.resetFailed = await !Self.resetEntry()
+            let reset = await Self.resetEntry()
+            model.resetting = false
+            // Closed, switched to Copy Only or granted meanwhile: leave Settings alone.
+            guard window?.isVisible == true, Prefs.afterChoosing == .paste, !Paster.isTrusted else { return }
+            model.resetFailed = !reset
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
             Paster.openAccessibilitySettings()
@@ -84,7 +93,9 @@ final class AccessGuide: NSObject, NSWindowDelegate {
 final class AccessGuideModel {
     var trusted = false
     var waiting = false
+    var resetting = false
     var resetFailed = false
+    var afterPaste = false
 }
 
 struct AccessGuideView: View {
@@ -98,7 +109,9 @@ struct AccessGuideView: View {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 52, height: 52)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Let ClipRust paste for you").font(.headline)
-                    Text("Your item is on the clipboard, so ⌘V still pastes it.").foregroundStyle(.secondary)
+                    Text(model.afterPaste ? "Your item is on the clipboard, so ⌘V still pastes it."
+                                          : "Until then, chosen items are only copied, so ⌘V pastes them.")
+                        .foregroundStyle(.secondary)
                 }
             }
             Text("To paste straight into the app you were using, ClipRust needs Accessibility access. After an update, macOS can stop accepting the earlier permission even though ClipRust still looks switched on.")
@@ -119,7 +132,7 @@ struct AccessGuideView: View {
                 Button("Use Copy Only", action: copyOnly)
                 Button("Open Accessibility Settings", action: fix)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(model.trusted)
+                    .disabled(model.trusted || model.resetting)
             }
         }
         .padding(20)

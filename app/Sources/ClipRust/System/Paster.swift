@@ -9,7 +9,7 @@ enum Paster {
     /// Sends ⌘V to `target` once the pasteboard holds the item.
     static func paste(into target: NSRunningApplication?) {
         guard isTrusted else {
-            AccessGuide.shared.show()
+            AccessGuide.shared.show(afterPaste: true)
             return
         }
         // Without a known target the item just stays on the clipboard.

@@ -78,6 +78,7 @@ enum PreviewRenderer {
             let guide = AccessGuideModel()
             guide.waiting = true
             guide.resetFailed = true
+            guide.afterPaste = true
             let guideWindow = NSWindow(contentViewController: NSHostingController(rootView: AccessGuideView(model: guide, fix: {}, copyOnly: {})))
             guideWindow.styleMask = [.titled, .closable]
             guideWindow.title = "Allow Pasting"
