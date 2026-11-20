@@ -2,16 +2,16 @@ import AppKit
 import SwiftUI
 
 /// A small panel pinned under System Settings with ClipRust's icon to drag into the Accessibility list.
-/// It finds the Settings window through the window server, which needs no permission.
+/// It finds the Settings window through the window server, which needs no permission, and tracks it
+/// until the guide closes.
 @MainActor
 final class AccessDragPanel {
+    private static let settingsID = "com.apple.systempreferences"
     private var panel: NSPanel?
     private var timer: Timer?
-    private var misses = 0
 
     func show() {
         if panel == nil { panel = Self.makePanel() }
-        misses = 0
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.follow() }
@@ -26,25 +26,24 @@ final class AccessDragPanel {
 
     private func follow() {
         guard let panel else { return }
-        guard let frame = Self.settingsWindowFrame() else {
+        // Only beside Settings in front, so it never floats over other apps.
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.settingsID,
+              let frame = Self.settingsWindowFrame() else {
             panel.orderOut(nil)
-            misses += 1
-            // Settings can take a moment to open; give up once it has been gone for a while.
-            if misses > 150 { hide() }
             return
         }
-        misses = 0
         let size = panel.frame.size
         var origin = NSPoint(x: frame.midX - size.width / 2, y: frame.minY - size.height - 10)
-        if let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }), origin.y < screen.visibleFrame.minY {
-            origin.y = frame.minY + 16
+        if let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }) {
+            // Short of room below, overlap Settings only as far as the screen edge requires.
+            origin.y = max(origin.y, screen.visibleFrame.minY + 4)
         }
         if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
 
     private static func settingsWindowFrame() -> NSRect? {
-        guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systempreferences")
+        guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: settingsID)
             .first(where: { $0.activationPolicy == .regular })?.processIdentifier,
             let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
         else { return nil }
