@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-20
+
 ### Install
 
 - Homebrew: `brew tap flix-wg/cliprust https://github.com/flix-wg/cliprust`, then `brew install --cask flix-wg/cliprust/cliprust`.
@@ -11,6 +13,11 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Core and CLI
 
 - The site a clip came from is read from Firefox and Zen too, with the optional add-on in `extensions/firefox`. It records only the origin, since pages you paste into can read it.
+- Search by site with `site:` or `source:` (`site:github.com`, or `site:git` for every domain starting with it). A domain matches that host and its subdomains; saved searches keep it.
+
+### macOS app
+
+- The empty search field cycles through examples of what you can search for.
 
 ## [0.1.0] - 2026-11-19
 
@@ -54,4 +61,5 @@ First public release.
 - Quick Look copies are deleted when the panel closes.
 - [SECURITY.md](SECURITY.md) describes the threat model and how to report a vulnerability.
 
+[0.1.1]: https://github.com/flix-wg/cliprust/releases/tag/v0.1.1
 [0.1.0]: https://github.com/flix-wg/cliprust/releases/tag/v0.1.0

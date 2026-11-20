@@ -1,6 +1,6 @@
 [package]
 name = "cliprust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Low-memory clipboard history for macOS: Rust core and CLI with SQLite FTS5 search"
