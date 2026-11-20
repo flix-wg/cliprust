@@ -38,15 +38,19 @@ A fast, low-memory clipboard history for macOS. A Rust core handles capture, sto
 
 ## Install
 
+### Homebrew
+
+```sh
+brew tap flix-wg/cliprust https://github.com/flix-wg/cliprust
+brew install --cask flix-wg/cliprust/cliprust
+```
+
+`brew upgrade` picks up new releases.
+
 ### Download
 
 1. Download `ClipRust-<version>-macos-arm64.zip` from the [latest release](https://github.com/flix-wg/cliprust/releases/latest) and check it against `SHA256SUMS.txt` (`shasum -a 256 -c SHA256SUMS.txt --ignore-missing`).
-2. Unzip it and move `ClipRust.app` to `/Applications`.
-3. Releases are not yet signed with an Apple Developer ID, so macOS blocks the first launch. Either open the app once, then choose **Open Anyway** in System Settings → Privacy & Security, or remove the quarantine flag:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/ClipRust.app
-   ```
+2. Unzip it and move `ClipRust.app` to `/Applications`. Releases are signed and notarized, so it opens like any other app.
 
 Pasting into other apps needs Accessibility permission, which macOS asks for on first use.
 
@@ -137,6 +141,7 @@ The open shortcut and every panel shortcut except ⏎, Esc, ⇥, the arrows, ⌘
 ```
 src/        Rust core: capture, SQLite store, search, rules, key detection, C API
 app/        SwiftUI app (Swift package) and build script
+Casks/      Homebrew cask
 docs/       Design notes and roadmap
 extensions/ Optional browser add-ons
 ```

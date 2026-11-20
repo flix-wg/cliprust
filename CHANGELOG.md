@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Install
+
+- Homebrew: `brew tap flix-wg/cliprust https://github.com/flix-wg/cliprust`, then `brew install --cask flix-wg/cliprust/cliprust`.
+
 ### Core and CLI
 
 - The site a clip came from is read from Firefox and Zen too, with the optional add-on in `extensions/firefox`. It records only the origin, since pages you paste into can read it.
