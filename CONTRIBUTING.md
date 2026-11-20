@@ -49,6 +49,8 @@ Signing and notarization run only when these repository secrets are set. Without
 | `APPLE_NOTARY_TEAM_ID` | Team ID of the developer account |
 | `APPLE_NOTARY_PASSWORD` | App-specific password for that Apple ID |
 
+After a release, point the Homebrew cask at it with `scripts/bump-cask.sh <version>` and merge that change through a pull request (`main` requires the CI checks, so the release job cannot push it).
+
 ## License
 
 By contributing you agree that your contributions are licensed under the [MIT License](LICENSE).
