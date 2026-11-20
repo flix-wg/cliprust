@@ -1,6 +1,6 @@
 cask "cliprust" do
-  version "0.1.0"
-  sha256 "38d80241f6cdf64ccbd3dada8ee9b2b00fd94a1a6f12150f0503e23db4496049"
+  version "0.1.1"
+  sha256 "ecf6e705919484d70abe9d24465bc2caa5c919acf2bb989c5d5c6d34ece1de52"
 
   url "https://github.com/flix-wg/cliprust/releases/download/v#{version}/ClipRust-#{version}-macos-arm64.zip"
   name "ClipRust"
