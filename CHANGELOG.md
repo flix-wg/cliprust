@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### macOS app
 
 - When ClipRust can’t paste, it says so every time and walks you through Accessibility access, clearing the stale entry an update leaves behind.
+- Next to System Settings, a small helper holds ClipRust’s icon to drag into the Accessibility list.
 
 ## [0.1.1] - 2026-11-20
 

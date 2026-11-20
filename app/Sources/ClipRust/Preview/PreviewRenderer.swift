@@ -83,6 +83,8 @@ enum PreviewRenderer {
             guideWindow.styleMask = [.titled, .closable]
             guideWindow.title = "Allow Pasting"
             capture(guideWindow, appearance: appearance, to: dir.appendingPathComponent("access-guide-\(suffix).png"))
+            render(AccessDragView().padding(20), size: NSSize(width: 420, height: 110), appearance: appearance,
+                   to: dir.appendingPathComponent("access-drag-\(suffix).png"))
 
             let settings = SettingsWindowController.makeWindow(app: app)
             for (i, item) in settings.tabs.tabViewItems.enumerated() {

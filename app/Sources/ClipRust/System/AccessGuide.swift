@@ -10,6 +10,7 @@ final class AccessGuide: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var timer: Timer?
     private let model = AccessGuideModel()
+    private let drag = AccessDragPanel()
 
     /// `afterPaste`: a chosen item just landed on the clipboard instead of being pasted.
     func show(afterPaste: Bool = false) {
@@ -40,9 +41,10 @@ final class AccessGuide: NSObject, NSWindowDelegate {
         timer?.invalidate()
         timer = nil
         model.waiting = false
+        drag.hide()
     }
 
-    /// Clears a stale entry left by an earlier build, adds ClipRust to the list and opens it.
+    /// Clears a stale entry left by an earlier build, opens the pane and pins a drag helper under it.
     /// macOS ties the grant to the code signature, so after an update the old switch can look on yet not count.
     private func fix() {
         guard !model.resetting, !Paster.isTrusted else { return }
@@ -54,9 +56,8 @@ final class AccessGuide: NSObject, NSWindowDelegate {
             // Closed, switched to Copy Only or granted meanwhile: leave Settings alone.
             guard window?.isVisible == true, Prefs.afterChoosing == .paste, !Paster.isTrusted else { return }
             model.resetFailed = !reset
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
             Paster.openAccessibilitySettings()
+            drag.show()
         }
     }
 
@@ -118,9 +119,9 @@ struct AccessGuideView: View {
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 Step(n: 1, text: "Click Open Accessibility Settings. ClipRust clears its old entry first.")
-                Step(n: 2, text: "Turn on ClipRust in the list.")
+                Step(n: 2, text: "Drag ClipRust from the helper under Settings into the list, and make sure its switch is on.")
                 if model.resetFailed {
-                    Text("ClipRust couldn’t clear its old entry. If the switch is already on, select ClipRust, remove it with −, then add it again with + from Applications.")
+                    Text("ClipRust couldn’t clear its old entry. If the switch is already on, select ClipRust, remove it with −, then drag it in again.")
                         .font(.callout).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
