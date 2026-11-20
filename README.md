@@ -50,7 +50,7 @@ brew install --cask flix-wg/cliprust/cliprust
 ### Download
 
 1. Download `ClipRust-<version>-macos-arm64.zip` from the [latest release](https://github.com/flix-wg/cliprust/releases/latest) and check it against `SHA256SUMS.txt` (`shasum -a 256 -c SHA256SUMS.txt --ignore-missing`).
-2. Unzip it and move `ClipRust.app` to `/Applications`. Releases are signed and notarized, so it opens like any other app.
+2. Unzip it and move `ClipRust.app` to `/Applications`. Releases are signed and notarized, so it opens like any other app. If a release says it is not notarized, macOS blocks the first launch: open the app once, then choose **Open Anyway** in System Settings → Privacy & Security.
 
 Pasting into other apps needs Accessibility permission, which macOS asks for on first use.
 
