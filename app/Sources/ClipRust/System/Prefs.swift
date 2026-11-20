@@ -42,7 +42,6 @@ enum Prefs {
         static let panelHeight = "panelHeight"
         static let requireAuth = "requireAuthForKeys"
         static let hotkey = "openShortcut"
-        static let explainedAccessibility = "explainedAccessibility"
         static let showTypeFilters = "showTypeFilters"
         static let openOn = "openPanelOn"
         static let lastFilter = "lastFilter"
@@ -108,11 +107,6 @@ enum Prefs {
         d.removeObject(forKey: Key.panelWidth)
         d.removeObject(forKey: Key.panelHeight)
         NotificationCenter.default.post(name: .panelSizeReset, object: nil)
-    }
-
-    static var explainedAccessibility: Bool {
-        get { d.bool(forKey: Key.explainedAccessibility) }
-        set { d.set(newValue, forKey: Key.explainedAccessibility) }
     }
 }
 

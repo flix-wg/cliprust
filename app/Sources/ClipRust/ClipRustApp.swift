@@ -63,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--self-test"), i + 1 < args.count {
             await SelfTest.run(panel, snapshot: URL(fileURLWithPath: args[i + 1]))
+        } else if Prefs.afterChoosing == .paste, !Paster.isTrusted {
+            // Updates can invalidate the grant, so say so now rather than on the first failed paste.
+            AccessGuide.shared.show()
         }
     }
 

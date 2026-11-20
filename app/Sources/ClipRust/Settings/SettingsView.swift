@@ -47,7 +47,10 @@ struct GeneralPane: View {
                         Label("Allowed", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.secondary)
                     } else {
-                        Button("Allow…") { Paster.openAccessibilitySettings() }
+                        Button("Allow…") {
+                            trusted = Paster.isTrusted
+                            if !trusted { AccessGuide.shared.show() }
+                        }
                     }
                 } label: {
                     Text("Accessibility")

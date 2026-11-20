@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### macOS app
+
+- When ClipRust can’t paste, it says so every time and walks you through Accessibility access, clearing the stale entry an update leaves behind.
+
 ## [0.1.1] - 2026-11-20
 
 ### Install

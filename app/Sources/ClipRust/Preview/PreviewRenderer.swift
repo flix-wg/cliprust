@@ -75,6 +75,15 @@ enum PreviewRenderer {
             keysWindow.setContentSize(NSSize(width: 900, height: 560))
             capture(keysWindow, appearance: appearance, to: dir.appendingPathComponent("keys-\(suffix).png"))
 
+            let guide = AccessGuideModel()
+            guide.waiting = true
+            guide.resetFailed = true
+            guide.afterPaste = true
+            let guideWindow = NSWindow(contentViewController: NSHostingController(rootView: AccessGuideView(model: guide, fix: {}, copyOnly: {})))
+            guideWindow.styleMask = [.titled, .closable]
+            guideWindow.title = "Allow Pasting"
+            capture(guideWindow, appearance: appearance, to: dir.appendingPathComponent("access-guide-\(suffix).png"))
+
             let settings = SettingsWindowController.makeWindow(app: app)
             for (i, item) in settings.tabs.tabViewItems.enumerated() {
                 settings.tabs.selectedTabViewItemIndex = i
