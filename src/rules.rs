@@ -105,21 +105,47 @@ pub(crate) fn contact_sql(contact: Option<Contact>, params: &mut Vec<Value>) -> 
     }
 }
 
-/// Items copied from `site`: the stored domain or a subdomain of it, or for a
-/// word without a dot (`github`) any domain that starts with it.
+/// Items copied from `site`: a page on that host or a subdomain of it, or
+/// for a word without a dot (`github`) any domain that starts with it.
 pub(crate) fn site_sql(site: &str, params: &mut Vec<Value>) -> String {
     let site = site.to_lowercase();
     if site.contains('.') {
+        let site = site.strip_prefix("www.").unwrap_or(&site).to_owned();
         params.push(site.clone().into());
         params.push(site.into());
-        return "(p.source_domain = ? OR ? LIKE '%.' || p.source_domain)".into();
+        // Clips without a URL only know the registrable domain.
+        return "(on_site(p.source_url, ?) OR (p.source_url IS NULL AND p.source_domain IS ?))"
+            .into();
     }
     let escaped = site
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_");
     params.push(format!("{escaped}%").into());
-    "p.source_domain LIKE ? ESCAPE '\\'".into()
+    "coalesce(p.source_domain, '') LIKE ? ESCAPE '\\'".into()
+}
+
+/// Registers `on_site(url, site)`: whether the URL's host is `site` or a
+/// subdomain of it. The stored domain is only the registrable one, so
+/// `docs.github.com` has to be told from `gist.github.com` by the URL.
+pub(crate) fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "on_site",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let (url, site): (Option<String>, String) = (ctx.get(0)?, ctx.get(1)?);
+            let Some(host) = url.as_deref().and_then(crate::secrets::host) else {
+                return Ok(false);
+            };
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            Ok(host == site
+                || host
+                    .strip_suffix(site.as_str())
+                    .is_some_and(|rest| rest.ends_with('.')))
+        },
+    )
 }
 
 fn join(rules: &[Rule], sep: &str, empty: &str, now: i64, params: &mut Vec<Value>) -> String {

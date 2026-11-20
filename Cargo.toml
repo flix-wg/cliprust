@@ -35,14 +35,14 @@ zstd = "0.14.4"
 
 # SQLCipher (with CommonCrypto) only where the master key can live in the Keychain.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-rusqlite = { version = "0.43.0", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled", "functions"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", features = ["NSWorkspace", "NSRunningApplication", "NSPasteboard", "libc"] }
 objc2-foundation = "0.3.2"
-rusqlite = { version = "0.43.0", features = ["bundled-sqlcipher"] }
+rusqlite = { version = "0.43.0", features = ["bundled-sqlcipher", "functions"] }
 security-framework = { version = "3.7.0", features = ["OSX_10_15"] }
 
 [dev-dependencies]

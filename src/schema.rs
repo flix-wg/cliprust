@@ -159,6 +159,7 @@ PRAGMA user_version = 5;
 pub(crate) const VERSION: i64 = 5;
 
 pub(crate) fn configure(conn: &Connection) -> rusqlite::Result<()> {
+    crate::rules::register_functions(conn)?;
     // Both persist in the file, so only a new one is written; setting them
     // again on every open rewrites the header and syncs.
     let new: i64 = conn.pragma_query_value(None, "page_count", |r| r.get(0))?;

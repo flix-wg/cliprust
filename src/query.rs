@@ -176,18 +176,26 @@ mod tests {
             path: None,
         });
         store.ingest(&cap, 1).unwrap();
-        for (n, url) in ["https://docs.github.com/en", "https://github.company"]
-            .iter()
-            .enumerate()
+        for (n, url) in [
+            "https://docs.github.com/en",
+            "https://github.company",
+            "https://gist.github.com/x",
+            "https://foo_bar.example/",
+            "https://news.github.com./",
+        ]
+        .iter()
+        .enumerate()
         {
             let mut page = Capture::from_text(format!("page {n}"));
             page.source_url = Some(url.to_string());
             store.ingest(&page, 2 + n as i64).unwrap();
         }
         for (query, hits) in [
-            ("site:git", 2),
+            ("site:git", 4),
             ("site:gitlab.com source:docs.GitHub.com", 1),
-            ("site:github.com", 1),
+            ("site:github.com", 3),
+            ("site:www.github.com", 3),
+            ("site:docs.fooxbar.example", 0),
             ("site:gitlab.com", 0),
         ] {
             let s = Search::resolve(&store, query, false).unwrap();
